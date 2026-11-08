@@ -1,4 +1,4 @@
-//! AArch64 general-purpose register snapshots.
+//! AArch64 general-purpose and floating-point/SIMD register snapshots.
 
 use crate::Error;
 use nix::libc::user_regs_struct;
@@ -60,4 +60,13 @@ impl RegSet {
         *register = value;
         Ok(())
     }
+}
+
+/// The NT_PRFPREG layout: V0–V31, FPSR, and FPCR.
+#[repr(C, align(16))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FpRegSet {
+    pub vregs: [u128; 32],
+    pub fpsr: u32,
+    pub fpcr: u32,
 }

@@ -15,5 +15,5 @@ pub use error::Error;
 pub use nix::sys::signal::Signal;
 pub use nix::sys::wait::WaitStatus;
 pub use nix::unistd::Pid;
-pub use regs::RegSet;
+pub use regs::{FpRegSet, RegSet};
 pub use tracee::Tracee;

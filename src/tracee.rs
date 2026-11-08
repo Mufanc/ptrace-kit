@@ -1,7 +1,7 @@
 //! Explicit control of one traced thread. Drop does not resume or detach it.
 
-use crate::constants::{NT_PRSTATUS, PTRACE_INTERRUPT, PTRACE_SEIZE};
-use crate::{Error, Pid, RegSet, Signal, WaitStatus};
+use crate::constants::{NT_PRFPREG, NT_PRSTATUS, PTRACE_INTERRUPT, PTRACE_SEIZE};
+use crate::{Error, FpRegSet, Pid, RegSet, Signal, WaitStatus};
 use nix::errno::Errno;
 use nix::libc::{self, PTRACE_GETREGSET, PTRACE_SETREGSET, c_int, iovec, user_regs_struct};
 use nix::sys::ptrace;
@@ -137,6 +137,36 @@ impl Tracee {
         };
 
         self.regset_io(PTRACE_SETREGSET, NT_PRSTATUS, &mut iov)
+    }
+
+    pub fn read_fp_regs(&self) -> Result<FpRegSet, Error> {
+        let mut regs = FpRegSet::default();
+        let mut iov = iovec {
+            iov_base: (&mut regs as *mut FpRegSet).cast(),
+            iov_len: size_of::<FpRegSet>(),
+        };
+
+        self.regset_io(PTRACE_GETREGSET, NT_PRFPREG, &mut iov)?;
+
+        if iov.iov_len != size_of::<FpRegSet>() {
+            return Err(Error::IllegalState(format!(
+                "tracee {} returned {} floating-point register bytes, expected {}",
+                self.tid,
+                iov.iov_len,
+                size_of::<FpRegSet>()
+            )));
+        }
+
+        Ok(regs)
+    }
+
+    pub fn write_fp_regs(&mut self, regs: &FpRegSet) -> Result<(), Error> {
+        let mut iov = iovec {
+            iov_base: (regs as *const FpRegSet).cast_mut().cast(),
+            iov_len: size_of::<FpRegSet>(),
+        };
+
+        self.regset_io(PTRACE_SETREGSET, NT_PRFPREG, &mut iov)
     }
 
     fn regset_io(&self, operation: c_int, note: usize, iov: &mut iovec) -> Result<(), Error> {

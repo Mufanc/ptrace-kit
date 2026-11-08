@@ -5,7 +5,7 @@ A toolkit for interacting with processes through ptrace.
 Supports **Android on AArch64**.
 
 - Seize, interrupt, wait for, resume, and detach individual threads.
-- Read and write general-purpose registers.
+- Read and write general-purpose and floating-point/SIMD registers.
 - Read and write remote memory as `u64` values or byte buffers.
 
 Tracing requires access to the target under Android's permission and SELinux policies.
