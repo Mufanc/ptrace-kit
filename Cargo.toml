@@ -1,0 +1,9 @@
+[package]
+name = "ptrace-kit"
+version = "0.1.0"
+edition = "2024"
+description = "A toolkit for interacting with processes through ptrace"
+
+[dependencies]
+nix = { version = "0.31", features = ["ptrace", "signal", "uio"] }
+thiserror = "2"
