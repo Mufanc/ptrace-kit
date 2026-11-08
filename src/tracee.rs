@@ -119,7 +119,7 @@ impl Tracee {
         self.regset_io(PTRACE_GETREGSET, NT_PRSTATUS, &mut iov)?;
 
         if iov.iov_len != size_of::<user_regs_struct>() {
-            return Err(Error::IllegalState(format!(
+            return Err(Error::Io(format!(
                 "tracee {} returned {} register bytes, expected {}",
                 self.tid,
                 iov.iov_len,
@@ -149,7 +149,7 @@ impl Tracee {
         self.regset_io(PTRACE_GETREGSET, NT_PRFPREG, &mut iov)?;
 
         if iov.iov_len != size_of::<FpRegSet>() {
-            return Err(Error::IllegalState(format!(
+            return Err(Error::Io(format!(
                 "tracee {} returned {} floating-point register bytes, expected {}",
                 self.tid,
                 iov.iov_len,
