@@ -9,6 +9,7 @@ mod constants;
 pub mod error;
 pub mod memory;
 pub mod regs;
+pub mod remote;
 pub mod tracee;
 
 pub use error::Error;
@@ -17,3 +18,6 @@ pub use nix::sys::wait::WaitStatus;
 pub use nix::unistd::Pid;
 pub use regs::{FpRegSet, RegSet};
 pub use tracee::Tracee;
+
+/// An address in the target process.
+pub type RemoteAddress = usize;

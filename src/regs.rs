@@ -1,6 +1,6 @@
 //! AArch64 general-purpose and floating-point/SIMD register snapshots.
 
-use crate::Error;
+use crate::{Error, RemoteAddress};
 use nix::libc::user_regs_struct;
 
 #[derive(Clone, Debug)]
@@ -18,26 +18,26 @@ impl Default for RegSet {
 }
 
 impl RegSet {
-    pub fn pc(&self) -> usize {
-        self.0.pc as usize
+    pub fn pc(&self) -> RemoteAddress {
+        self.0.pc as RemoteAddress
     }
-    pub fn set_pc(&mut self, value: usize) {
+    pub fn set_pc(&mut self, value: RemoteAddress) {
         self.0.pc = value as u64;
     }
-    pub fn sp(&self) -> usize {
-        self.0.sp as usize
+    pub fn sp(&self) -> RemoteAddress {
+        self.0.sp as RemoteAddress
     }
-    pub fn set_sp(&mut self, value: usize) {
+    pub fn set_sp(&mut self, value: RemoteAddress) {
         self.0.sp = value as u64;
     }
-    pub fn lr(&self) -> usize {
-        self.0.regs[30] as usize
+    pub fn lr(&self) -> RemoteAddress {
+        self.0.regs[30] as RemoteAddress
     }
-    pub fn set_lr(&mut self, value: usize) {
+    pub fn set_lr(&mut self, value: RemoteAddress) {
         self.0.regs[30] = value as u64;
     }
-    pub fn fp(&self) -> usize {
-        self.0.regs[29] as usize
+    pub fn fp(&self) -> RemoteAddress {
+        self.0.regs[29] as RemoteAddress
     }
     pub fn pstate(&self) -> u64 {
         self.0.pstate

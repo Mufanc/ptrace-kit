@@ -1,6 +1,6 @@
 //! Remote memory access with complete-transfer semantics.
 
-use crate::{Error, Tracee};
+use crate::{Error, RemoteAddress, Tracee};
 use nix::errno::Errno;
 use nix::sys::ptrace;
 use nix::sys::uio::{self, RemoteIoVec};
@@ -35,7 +35,7 @@ fn transfer_exact(
     Ok(())
 }
 
-fn checked_range(address: usize, len: usize) -> Result<(), Error> {
+fn checked_range(address: RemoteAddress, len: usize) -> Result<(), Error> {
     address.checked_add(len).ok_or_else(|| {
         Error::InvalidArgument(format!(
             "remote range address={address:#x}, len={len} overflows"
@@ -46,7 +46,7 @@ fn checked_range(address: usize, len: usize) -> Result<(), Error> {
 }
 
 impl Tracee {
-    pub fn read_u64(&self, address: usize) -> Result<u64, Error> {
+    pub fn read_u64(&self, address: RemoteAddress) -> Result<u64, Error> {
         ptrace::read(self.active_target()?, address as _)
             .map(|value| value as u64)
             .map_err(|source| Error::System {
@@ -55,7 +55,7 @@ impl Tracee {
             })
     }
 
-    pub fn write_u64(&mut self, address: usize, value: u64) -> Result<(), Error> {
+    pub fn write_u64(&mut self, address: RemoteAddress, value: u64) -> Result<(), Error> {
         ptrace::write(self.active_target()?, address as _, value as _).map_err(|source| {
             Error::System {
                 reason: format!("PTRACE_POKEDATA tid={}, address={address:#x}", self.tid()),
@@ -66,7 +66,7 @@ impl Tracee {
         Ok(())
     }
 
-    pub fn read_exact(&self, address: usize, output: &mut [u8]) -> Result<(), Error> {
+    pub fn read_exact(&self, address: RemoteAddress, output: &mut [u8]) -> Result<(), Error> {
         let tid = self.active_target()?;
 
         checked_range(address, output.len())?;
@@ -93,7 +93,7 @@ impl Tracee {
         })
     }
 
-    pub fn write_all(&mut self, address: usize, input: &[u8]) -> Result<(), Error> {
+    pub fn write_all(&mut self, address: RemoteAddress, input: &[u8]) -> Result<(), Error> {
         let tid = self.active_target()?;
 
         checked_range(address, input.len())?;
@@ -120,7 +120,7 @@ impl Tracee {
 
 #[cfg(test)]
 mod tests {
-    use crate::Error;
+    use crate::{Error, RemoteAddress};
     use nix::errno::Errno;
 
     #[test]
@@ -174,7 +174,7 @@ mod tests {
         assert!(reason.contains("2 of 4 bytes"));
         assert!(reason.contains("test transfer"));
         assert!(reason.contains("EFAULT"));
-        assert!(super::checked_range(usize::MAX, 1).is_err());
+        assert!(super::checked_range(RemoteAddress::MAX, 1).is_err());
         super::transfer_exact(0, |_| panic!("empty transfer must not issue a syscall")).unwrap();
     }
 }

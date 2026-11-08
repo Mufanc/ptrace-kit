@@ -9,6 +9,8 @@ pub enum Error {
     InvalidArgument(String),
     #[error("illegal state: {0}")]
     IllegalState(String),
+    #[error("execution failed: {0}")]
+    Execution(String),
     #[error("operation timed out: {0}")]
     Timeout(String),
     #[error("I/O error: {0}")]

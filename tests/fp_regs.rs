@@ -23,16 +23,16 @@ fn reads_writes_and_restores_fpsimd() {
             .unwrap(),
         WaitStatus::PtraceEvent(_, Signal::SIGTRAP, PTRACE_EVENT_STOP)
     ));
-    let original = tracee.read_fp_regs().unwrap();
-    let mut modified = original.clone();
+    let orig = tracee.read_fp_regs().unwrap();
+    let mut modified = orig.clone();
     modified.vregs[0] = u128::MAX;
     modified.vregs[31] = 1 << 127;
     modified.fpsr = 0x10;
     modified.fpcr = 1 << 22;
     tracee.write_fp_regs(&modified).unwrap();
     assert_eq!(tracee.read_fp_regs().unwrap(), modified);
-    tracee.write_fp_regs(&original).unwrap();
-    assert_eq!(tracee.read_fp_regs().unwrap(), original);
+    tracee.write_fp_regs(&orig).unwrap();
+    assert_eq!(tracee.read_fp_regs().unwrap(), orig);
     tracee.detach(None).unwrap();
     assert!(matches!(tracee.read_fp_regs(), Err(Error::IllegalState(_))));
 }

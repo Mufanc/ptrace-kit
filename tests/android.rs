@@ -5,7 +5,7 @@ use nix::libc::{
 };
 use nix::sys::signal;
 use nix::sys::wait;
-use ptrace_kit::{Error, Pid, Signal, Tracee, WaitStatus};
+use ptrace_kit::{Error, Pid, RemoteAddress, Signal, Tracee, WaitStatus};
 use std::error::Error as StdError;
 use std::time::{Duration, Instant};
 
@@ -56,7 +56,7 @@ fn controls_child_and_accesses_its_state() {
         0
     );
 
-    let address = raw as usize;
+    let address = raw as RemoteAddress;
     // Initialize child data in an untagged mapping.
     unsafe {
         raw.cast::<u8>().write_bytes(0x11, 16);
@@ -102,19 +102,16 @@ fn controls_child_and_accesses_its_state() {
             .downcast_ref::<Errno>()
             .is_some()
     );
-    let original = tracee.read_regs().unwrap();
-    assert!(matches!(
-        original.register(31),
-        Err(Error::InvalidArgument(_))
-    ));
-    let mut modified = original.clone();
+    let orig = tracee.read_regs().unwrap();
+    assert!(matches!(orig.register(31), Err(Error::InvalidArgument(_))));
+    let mut modified = orig.clone();
     modified.set_register(0, 0x12345678).unwrap();
     tracee.write_regs(&modified).unwrap();
     assert_eq!(tracee.read_regs().unwrap().return_value(), 0x12345678);
-    tracee.write_regs(&original).unwrap();
+    tracee.write_regs(&orig).unwrap();
     assert_eq!(
         tracee.read_regs().unwrap().return_value(),
-        original.return_value()
+        orig.return_value()
     );
 
     let mut output = [0; 16];
@@ -134,9 +131,11 @@ fn controls_child_and_accesses_its_state() {
         assert_eq!(&output[..8], &value.to_le_bytes());
     }
     tracee.read_exact(0, &mut []).unwrap();
-    let invalid_range = tracee.read_exact(usize::MAX, &mut output).unwrap_err();
+    let invalid_range = tracee
+        .read_exact(RemoteAddress::MAX, &mut output)
+        .unwrap_err();
     assert!(matches!(invalid_range, Error::InvalidArgument(_)));
-    let boundary = raw as usize + page_size - 8;
+    let boundary = raw as RemoteAddress + page_size - 8;
     assert!(matches!(
         tracee.read_exact(boundary, &mut output),
         Err(Error::Io(_))

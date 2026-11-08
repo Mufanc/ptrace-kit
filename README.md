@@ -7,6 +7,7 @@ Supports **Android on AArch64**.
 - Seize, interrupt, wait for, resume, and detach individual threads.
 - Read and write general-purpose and floating-point/SIMD registers.
 - Read and write remote memory as `u64` values or byte buffers.
+- Call remote functions with up to eight integer or pointer arguments.
 
 Tracing requires access to the target under Android's permission and SELinux policies.
 
@@ -23,9 +24,9 @@ Use `Tracee::seize`, `interrupt`, and `wait` to establish a ptrace stop. Once st
 registers can be inspected directly:
 
 ```rust
-use ptrace_kit::{Error, Tracee};
+use ptrace_kit::{Error, RemoteAddress, Tracee};
 
-fn program_counter(tracee: &Tracee) -> Result<usize, Error> {
+fn program_counter(tracee: &Tracee) -> Result<RemoteAddress, Error> {
     Ok(tracee.read_regs()?.pc())
 }
 ```
@@ -40,3 +41,5 @@ fn program_counter(tracee: &Tracee) -> Result<usize, Error> {
   callers own signal handling and cleanup, including error paths.
 - Memory addresses must be untagged. Buffer operations complete the entire transfer
   or return an error; partial writes are not rolled back.
+- Remote calls report register recovery status. The target may remain running after
+  a timeout; memory and resource side effects are not rolled back.
