@@ -77,16 +77,13 @@ fn controls_child_and_accesses_its_state() {
         Tracee::seize(Pid::from_raw(0)),
         Err(Error::InvalidArgument(_))
     ));
-    let mut tracee = Tracee::seize(child.0).unwrap();
-    assert!(matches!(
-        tracee.wait(Instant::now() + Duration::from_millis(20)),
-        Err(Error::Timeout(_))
-    ));
+    let mut tracee = Tracee::seize(child.0)
+        .unwrap()
+        .with_timeout(Duration::from_millis(20));
+    assert!(matches!(tracee.wait(), Err(Error::Timeout(_))));
     tracee.interrupt().unwrap();
     assert!(matches!(
-        tracee
-            .wait(Instant::now() + Duration::from_secs(2))
-            .unwrap(),
+        Tracee::wait(&mut tracee, Instant::now() + Duration::from_secs(2)).unwrap(),
         WaitStatus::PtraceEvent(_, _, PTRACE_EVENT_STOP)
     ));
 
@@ -147,9 +144,7 @@ fn controls_child_and_accesses_its_state() {
 
     tracee.resume(None).unwrap();
     tracee.interrupt().unwrap();
-    tracee
-        .wait(Instant::now() + Duration::from_secs(2))
-        .unwrap();
+    Tracee::wait(&mut tracee, Instant::now() + Duration::from_secs(2)).unwrap();
     tracee.detach(None).unwrap();
     assert!(matches!(tracee.interrupt(), Err(Error::IllegalState(_))));
     let detached = tracee.read_exact(address, &mut output).unwrap_err();

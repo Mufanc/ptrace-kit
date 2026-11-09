@@ -125,17 +125,17 @@ fn assert_restored(tracee: &Tracee, orig: &RegSet, fpr: &FpRegSet) {
 #[test]
 fn remote_call_returns_and_restores_registers() {
     let child = Child::paused();
-    let mut tracee = child.stopped();
+    let mut tracee = child.stopped().with_timeout(Duration::from_secs(2));
     let orig = tracee.read_regs().unwrap();
     let fpr = tracee.read_fp_regs().unwrap();
-    let options = call_options(&orig, Duration::from_secs(2));
+    let return_address = orig.sp();
     // These functions and eight register arguments are valid in the forked target;
     // the stack is writable and its address is a non-executable return sentinel.
     let result = unsafe {
         tracee.call_remote(
             sum8 as *const () as RemoteAddress,
             &[1, 2, 3, 4, 5, 6, 7, 8],
-            options,
+            return_address,
             None,
         )
     }
@@ -155,22 +155,20 @@ fn remote_call_returns_and_restores_registers() {
             10,
         ),
     ] {
-        let value = unsafe {
-            tracee.call_remote(
-                function,
-                &args,
-                call_options(&orig, Duration::from_secs(2)),
-                None,
-            )
-        }
-        .unwrap();
+        let value = unsafe { tracee.call_remote(function, &args, return_address, None) }.unwrap();
         assert_eq!(value, expected);
         assert_restored(&tracee, &orig, &fpr);
     }
 
-    let invalid =
-        unsafe { tracee.call_remote(sum8 as *const () as RemoteAddress, &[0; 9], options, None) }
-            .unwrap_err();
+    let invalid = unsafe {
+        tracee.call_remote(
+            sum8 as *const () as RemoteAddress,
+            &[0; 9],
+            return_address,
+            None,
+        )
+    }
+    .unwrap_err();
     assert!(matches!(
         invalid,
         RemoteCallError::Call {
@@ -181,7 +179,8 @@ fn remote_call_returns_and_restores_registers() {
     assert_restored(&tracee, &orig, &fpr);
 
     let expired = unsafe {
-        tracee.call_remote(
+        Tracee::call_remote(
+            &mut tracee,
             sum8 as *const () as RemoteAddress,
             &[],
             call_options(&orig, Duration::ZERO),

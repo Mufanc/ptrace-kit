@@ -11,6 +11,10 @@ use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod timeout;
+
+pub use timeout::TraceeWithTimeout;
+
 #[derive(Debug)]
 pub struct Tracee {
     tid: Pid,

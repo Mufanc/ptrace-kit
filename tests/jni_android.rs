@@ -2,7 +2,6 @@
 
 use nix::libc::PTRACE_EVENT_STOP;
 use ptrace_kit::jni::{JniError, JniNativeInterface};
-use ptrace_kit::remote::CallOptions;
 use ptrace_kit::{Pid, Signal, Tracee, WaitStatus};
 use std::io::{BufRead, BufReader};
 use std::mem::offset_of;
@@ -69,10 +68,8 @@ fn strings_in_real_art_vm() {
     ));
     let orig = tracee.read_regs().unwrap();
     let fpr = tracee.read_fp_regs().unwrap();
-    let options = CallOptions {
-        return_address: orig.sp(),
-        deadline: Instant::now() + Duration::from_secs(20),
-    };
+    let return_address = orig.sp();
+    let mut tracee = tracee.with_timeout(Duration::from_secs(20));
     // The native fixture keeps the JNIEnv and input strings live on the seized thread.
     unsafe {
         assert!(
@@ -81,7 +78,7 @@ fn strings_in_real_art_vm() {
                     env,
                     offset_of!(JniNativeInterface, GetVersion),
                     &[],
-                    options,
+                    return_address,
                     None
                 )
                 .unwrap()
@@ -92,33 +89,33 @@ fn strings_in_real_art_vm() {
                 env,
                 offset_of!(JniNativeInterface, GetVersion),
                 &[0; 8],
-                options,
+                return_address,
                 None
             ),
             Err(JniError::Core(_))
         ));
         assert_eq!(
             tracee
-                .read_jstring(env, original_string, options, None)
+                .read_jstring(env, original_string, return_address, None)
                 .unwrap()
                 .as_deref(),
             Some("初始\0🙂")
         );
         assert_eq!(
             tracee
-                .read_jstring(env, empty, options, None)
+                .read_jstring(env, empty, return_address, None)
                 .unwrap()
                 .as_deref(),
             Some("")
         );
         assert!(
             tracee
-                .read_jstring(env, 0, options, None)
+                .read_jstring(env, 0, return_address, None)
                 .unwrap()
                 .is_none()
         );
         assert!(matches!(
-            tracee.read_jstring(env, malformed, options, None),
+            tracee.read_jstring(env, malformed, return_address, None),
             Err(JniError::Utf16(_))
         ));
 
@@ -126,7 +123,7 @@ fn strings_in_real_art_vm() {
         let expected = format!("{}🙂tail", "x".repeat(2047));
         assert_eq!(
             tracee
-                .read_jstring(env, long, options, None)
+                .read_jstring(env, long, return_address, None)
                 .unwrap()
                 .as_deref(),
             Some(expected.as_str())

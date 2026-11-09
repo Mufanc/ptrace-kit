@@ -43,6 +43,7 @@ fn program_counter(tracee: &Tracee) -> Result<RemoteAddress, Error> {
 - `seize` establishes tracing without stopping execution. Inspect the `WaitStatus`
   returned by `wait` before accessing registers or resuming the target.
 - `wait` takes an `Instant` deadline. A timeout does not stop or cancel the target.
+  Use `Tracee::with_timeout` to configure a fresh timeout budget per wait or remote call.
 - Detach explicitly from a ptrace stop. `Drop` does not detach or resume the target;
   callers own signal handling and cleanup, including error paths.
 - Memory addresses must be untagged. Buffer operations complete the entire transfer

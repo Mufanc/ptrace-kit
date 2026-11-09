@@ -19,7 +19,7 @@ pub use nix::sys::signal::Signal;
 pub use nix::sys::wait::WaitStatus;
 pub use nix::unistd::Pid;
 pub use regs::{FpRegSet, RegSet};
-pub use tracee::Tracee;
+pub use tracee::{Tracee, TraceeWithTimeout};
 
 /// An address in the target process.
 pub type RemoteAddress = usize;
