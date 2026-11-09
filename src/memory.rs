@@ -49,18 +49,20 @@ impl Tracee {
     pub fn read_u64(&self, address: RemoteAddress) -> Result<u64, Error> {
         ptrace::read(self.active_target()?, address as _)
             .map(|value| value as u64)
-            .map_err(|source| Error::System {
-                reason: format!("PTRACE_PEEKDATA tid={}, address={address:#x}", self.tid()),
-                source,
+            .map_err(|source| {
+                Error::system(
+                    format!("PTRACE_PEEKDATA tid={}, address={address:#x}", self.tid()),
+                    source,
+                )
             })
     }
 
     pub fn write_u64(&mut self, address: RemoteAddress, value: u64) -> Result<(), Error> {
         ptrace::write(self.active_target()?, address as _, value as _).map_err(|source| {
-            Error::System {
-                reason: format!("PTRACE_POKEDATA tid={}, address={address:#x}", self.tid()),
+            Error::system(
+                format!("PTRACE_POKEDATA tid={}, address={address:#x}", self.tid()),
                 source,
-            }
+            )
         })?;
 
         Ok(())
@@ -82,13 +84,15 @@ impl Tracee {
                 &mut [IoSliceMut::new(&mut output[offset..])],
                 &[remote],
             )
-            .map_err(|source| Error::System {
-                reason: format!(
-                    "process_vm_readv tid={tid}, address={:#x}, len={}",
-                    address + offset,
-                    output.len() - offset
-                ),
-                source,
+            .map_err(|source| {
+                Error::system(
+                    format!(
+                        "process_vm_readv tid={tid}, address={:#x}, len={}",
+                        address + offset,
+                        output.len() - offset
+                    ),
+                    source,
+                )
             })
         })
     }
@@ -105,13 +109,15 @@ impl Tracee {
             };
 
             uio::process_vm_writev(tid, &[IoSlice::new(&input[offset..])], &[remote]).map_err(
-                |source| Error::System {
-                    reason: format!(
-                        "process_vm_writev tid={tid}, address={:#x}, len={}",
-                        address + offset,
-                        input.len() - offset
-                    ),
-                    source,
+                |source| {
+                    Error::system(
+                        format!(
+                            "process_vm_writev tid={tid}, address={:#x}, len={}",
+                            address + offset,
+                            input.len() - offset
+                        ),
+                        source,
+                    )
                 },
             )
         })

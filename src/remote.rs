@@ -155,10 +155,7 @@ impl Tracee {
                     WaitStatus::Stopped(_, Signal::SIGSEGV) => {
                         let regs = self.read_regs()?;
                         let info = ptrace::getsiginfo(self.active_target()?).map_err(|source| {
-                            Error::System {
-                                reason: format!("PTRACE_GETSIGINFO tid={}", self.tid()),
-                                source,
-                            }
+                            Error::system(format!("PTRACE_GETSIGINFO tid={}", self.tid()), source)
                         })?;
                         // si_addr is the fault-address union member for kernel SIGSEGV.
                         let address = unsafe { info.si_addr() } as RemoteAddress;

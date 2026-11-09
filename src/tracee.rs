@@ -76,10 +76,7 @@ impl Tracee {
                     return Ok(status);
                 }
                 Err(source) => {
-                    return Err(Error::System {
-                        reason: format!("waitpid tid={tid}"),
-                        source,
-                    });
+                    return Err(Error::system(format!("waitpid tid={tid}"), source));
                 }
             }
 
@@ -94,9 +91,11 @@ impl Tracee {
     }
 
     pub fn resume(&mut self, signal: Option<Signal>) -> Result<(), Error> {
-        ptrace::cont(self.active_target()?, signal).map_err(|source| Error::System {
-            reason: format!("PTRACE_CONT tid={}, signal={signal:?}", self.tid),
-            source,
+        ptrace::cont(self.active_target()?, signal).map_err(|source| {
+            Error::system(
+                format!("PTRACE_CONT tid={}, signal={signal:?}", self.tid),
+                source,
+            )
         })?;
 
         Ok(())
@@ -104,9 +103,11 @@ impl Tracee {
 
     /// Requires a ptrace stop. Failure preserves the attached handle for retry.
     pub fn detach(&mut self, signal: Option<Signal>) -> Result<(), Error> {
-        ptrace::detach(self.active_target()?, signal).map_err(|source| Error::System {
-            reason: format!("PTRACE_DETACH tid={}, signal={signal:?}", self.tid),
-            source,
+        ptrace::detach(self.active_target()?, signal).map_err(|source| {
+            Error::system(
+                format!("PTRACE_DETACH tid={}, signal={signal:?}", self.tid),
+                source,
+            )
         })?;
         self.attached = false;
 
@@ -193,12 +194,8 @@ fn request(tid: Pid, request: c_int, address: usize, data: usize) -> Result<(), 
     };
 
     // Pointer arguments refer to live buffers for the duration of the synchronous syscall.
-    Errno::result(unsafe { libc::ptrace(request, tid.as_raw(), address, data) }).map_err(
-        |source| Error::System {
-            reason: format!("{reason} tid={tid}"),
-            source,
-        },
-    )?;
+    Errno::result(unsafe { libc::ptrace(request, tid.as_raw(), address, data) })
+        .map_err(|source| Error::system(format!("{reason} tid={tid}"), source))?;
 
     Ok(())
 }

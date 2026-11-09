@@ -22,3 +22,9 @@ pub enum Error {
         source: Errno,
     },
 }
+
+impl Error {
+    pub(crate) fn system(reason: String, source: Errno) -> Self {
+        Self::System { reason, source }
+    }
+}
