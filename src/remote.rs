@@ -72,6 +72,15 @@ pub enum RemoteCallError {
     },
 }
 
+impl RemoteCallError {
+    pub(crate) fn unchanged(cause: Error) -> Self {
+        Self::Call {
+            cause,
+            recovery: Recovery::Unchanged,
+        }
+    }
+}
+
 impl Display for Recovery {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
@@ -104,32 +113,41 @@ impl Tracee {
         options: CallOptions,
         mut on_stop: Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
     ) -> Result<u64, RemoteCallError> {
-        let (orig, fpr_orig, prepared) = (|| {
-            let orig = self.read_regs()?;
-            let prepared = prepare_regs(&orig, function, args, options.return_address)?;
-            let fpr_orig = self.read_fp_regs()?;
+        let orig = self.read_regs().map_err(RemoteCallError::unchanged)?;
+        let entry = prepare_regs(&orig, function, args, options.return_address)
+            .map_err(RemoteCallError::unchanged)?;
 
-            if Instant::now() >= options.deadline {
-                return Err(Error::Timeout(format!(
-                    "remote call tid={}, function={function:#x}",
-                    self.tid()
-                )));
-            }
+        unsafe { self.call_remote_with_regs(&orig, &entry, options.deadline, &mut on_stop) }
+    }
 
-            Ok((orig, fpr_orig, prepared))
-        })()
-        .map_err(|cause| RemoteCallError::Call {
-            cause,
-            recovery: Recovery::Unchanged,
-        })?;
+    /// `orig` must match the current GPRs. `entry` must describe a valid remote call
+    /// as required by `call_remote`, with its return marker in LR.
+    pub(crate) unsafe fn call_remote_with_regs(
+        &mut self,
+        orig: &RegSet,
+        entry: &RegSet,
+        deadline: Instant,
+        on_stop: &mut Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
+    ) -> Result<u64, RemoteCallError> {
+        let function = entry.pc();
+        let return_address = entry.lr();
+        let fpr_orig = self.read_fp_regs().map_err(RemoteCallError::unchanged)?;
+
+        if Instant::now() >= deadline {
+            return Err(RemoteCallError::unchanged(Error::Timeout(format!(
+                "remote call tid={}, function={function:#x}",
+                self.tid()
+            ))));
+        }
+
         let mut stopped = true;
         let result = (|| {
-            self.write_regs(&prepared)?;
+            self.write_regs(entry)?;
             self.resume(None)?;
             stopped = false;
 
             loop {
-                let status = self.wait(options.deadline)?;
+                let status = self.wait(deadline)?;
 
                 stopped = is_stop(status);
 
@@ -145,9 +163,9 @@ impl Tracee {
                         // si_addr is the fault-address union member for kernel SIGSEGV.
                         let address = unsafe { info.si_addr() } as RemoteAddress;
 
-                        if regs.pc() == options.return_address
+                        if regs.pc() == return_address
                             && info.si_code > 0
-                            && address == options.return_address
+                            && address == return_address
                         {
                             return Ok(regs.return_value());
                         }
@@ -156,7 +174,7 @@ impl Tracee {
                             "remote call tid={} unexpected SIGSEGV: pc={:#x}, fault_address={address:#x}, return_address={:#x}, si_code={}",
                             self.tid(),
                             regs.pc(),
-                            options.return_address,
+                            return_address,
                             info.si_code
                         )));
                     }
@@ -185,7 +203,7 @@ impl Tracee {
                     None => default_stop(status),
                 };
 
-                if Instant::now() >= options.deadline {
+                if Instant::now() >= deadline {
                     return Err(Error::Timeout(format!(
                         "remote call tid={}, function={function:#x}",
                         self.tid()
@@ -206,7 +224,7 @@ impl Tracee {
                 }
             }
         })();
-        let recovery = self.recover_call(stopped, &orig, &fpr_orig);
+        let recovery = self.recover_call(stopped, orig, &fpr_orig);
 
         match (result, recovery) {
             (Ok(value), Ok(())) => Ok(value),

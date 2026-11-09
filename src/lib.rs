@@ -7,6 +7,8 @@
 mod constants;
 
 pub mod error;
+#[cfg(feature = "jni")]
+pub mod jni;
 pub mod memory;
 pub mod regs;
 pub mod remote;
