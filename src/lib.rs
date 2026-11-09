@@ -9,6 +9,8 @@ mod constants;
 pub mod error;
 #[cfg(feature = "jni")]
 pub mod jni;
+#[cfg(feature = "maps")]
+pub mod maps;
 pub mod memory;
 pub mod regs;
 pub mod remote;

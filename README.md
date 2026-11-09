@@ -7,6 +7,7 @@ Supports **Android on AArch64**.
 - Seize, interrupt, wait for, resume, and detach individual threads.
 - Read and write general-purpose and floating-point/SIMD registers.
 - Read and write remote memory as `u64` values or byte buffers.
+- Read process memory maps and look up mappings by address with the optional `maps` feature.
 - Call remote functions with up to eight integer or pointer arguments.
 - Call JNI functions and read Java strings with the optional `jni` feature.
 
@@ -20,6 +21,8 @@ Add as a Git dependency:
 [dependencies]
 ptrace-kit = { git = "https://github.com/Mufanc/ptrace-kit.git" }
 ```
+
+Enable `features = ["full"]` to include all optional capabilities.
 
 Enable `features = ["jni"]` to use `Tracee::call_remote_jni` and
 `Tracee::read_jstring` with a valid target-thread JNIEnv. String reads need 4 KiB

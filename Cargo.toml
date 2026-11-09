@@ -6,9 +6,12 @@ description = "A toolkit for interacting with processes through ptrace"
 
 [features]
 default = []
+full = ["jni", "maps"]
 jni = ["dep:jni-sys"]
+maps = ["dep:procfs"]
 
 [dependencies]
-nix = { version = "0.31", features = ["ptrace", "signal", "uio"] }
-thiserror = "2"
 jni-sys = { version = "0.4", optional = true }
+nix = { version = "0.31", features = ["ptrace", "signal", "uio"] }
+procfs = { version = "0.18", default-features = false, optional = true }
+thiserror = "2"

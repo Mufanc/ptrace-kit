@@ -5,6 +5,8 @@ use nix::libc::{
 };
 use nix::sys::signal;
 use nix::sys::wait;
+#[cfg(feature = "maps")]
+use ptrace_kit::maps::{MapPath, MapPermissions, Maps};
 use ptrace_kit::{Error, Pid, RemoteAddress, Signal, Tracee, WaitStatus};
 use std::error::Error as StdError;
 use std::time::{Duration, Instant};
@@ -73,6 +75,29 @@ fn controls_child_and_accesses_its_state() {
     }
     assert!(pid > 0);
     let child = Child(Pid::from_raw(pid));
+    #[cfg(feature = "maps")]
+    {
+        let maps = Maps::scan(child.0).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        assert!(maps.file_entries().any(|(path, entry)| {
+            path == executable && entry.perms.contains(MapPermissions::EXECUTE)
+        }));
+        let writable = maps.find(address).unwrap();
+        let protected = maps.find(address + page_size).unwrap();
+        assert_eq!(writable.address.1, protected.address.0);
+        assert!(
+            writable
+                .perms
+                .contains(MapPermissions::READ | MapPermissions::WRITE | MapPermissions::PRIVATE)
+        );
+        assert_eq!(protected.perms, MapPermissions::PRIVATE);
+        assert_eq!(protected.pathname, MapPath::Anonymous);
+        assert!(
+            maps.entries()
+                .iter()
+                .any(|entry| entry.pathname == MapPath::Stack)
+        );
+    }
     assert!(matches!(
         Tracee::seize(Pid::from_raw(0)),
         Err(Error::InvalidArgument(_))
