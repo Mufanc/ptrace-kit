@@ -11,6 +11,7 @@ Supports **Android on AArch64**.
 - Resolve symbols in a mapped ELF with `MappedFile::resolve_symbol` and the optional `symbols` feature.
 - Translate file offsets to target addresses with `MappedFile::address_at_file_offset` and the optional `maps` feature.
 - Call remote functions with up to eight integer or pointer arguments.
+- Duplicate target file descriptors and manage IPC channels with the optional `ipc` feature.
 - Call JNI functions and read Java strings with the optional `jni` feature.
 
 Tracing requires access to the target under Android's permission and SELinux policies.

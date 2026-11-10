@@ -7,6 +7,8 @@
 mod constants;
 
 pub mod error;
+#[cfg(feature = "ipc")]
+pub mod ipc;
 #[cfg(feature = "jni")]
 pub mod jni;
 #[cfg(feature = "maps")]

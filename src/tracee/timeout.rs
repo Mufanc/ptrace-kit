@@ -1,3 +1,5 @@
+#[cfg(feature = "ipc")]
+use crate::ipc::{IpcChannel, IpcError};
 #[cfg(feature = "jni")]
 use crate::jni::JniError;
 use crate::remote::{CallOptions, RemoteCallError, StopAction};
@@ -65,6 +67,37 @@ impl TraceeWithTimeout {
             .map_err(RemoteCallError::unchanged)?;
 
         unsafe { self.tracee.call_remote(function, args, options, on_stop) }
+    }
+
+    /// Creates an IPC channel with one timeout budget for the entire setup.
+    ///
+    /// # Safety
+    /// The safety conditions of [`Tracee::create_channel`] apply.
+    #[cfg(feature = "ipc")]
+    pub unsafe fn create_channel(
+        &mut self,
+        return_address: RemoteAddress,
+        on_stop: Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
+    ) -> Result<IpcChannel, IpcError> {
+        let options = self.call_options(return_address)?;
+
+        unsafe { self.tracee.create_channel(options, on_stop) }
+    }
+
+    /// Closes an IPC channel using the configured timeout.
+    ///
+    /// # Safety
+    /// The safety conditions of [`Tracee::close_channel`] apply.
+    #[cfg(feature = "ipc")]
+    pub unsafe fn close_channel(
+        &mut self,
+        channel: &mut IpcChannel,
+        return_address: RemoteAddress,
+        on_stop: Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
+    ) -> Result<(), IpcError> {
+        let options = self.call_options(return_address)?;
+
+        unsafe { self.tracee.close_channel(channel, options, on_stop) }
     }
 
     /// Executes a remote JNI function using the configured timeout.

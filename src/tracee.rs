@@ -19,6 +19,8 @@ pub use timeout::TraceeWithTimeout;
 pub struct Tracee {
     tid: Pid,
     attached: bool,
+    #[cfg(feature = "ipc")]
+    pub(crate) ipc_session: Rc<()>,
     // Ptrace operations must stay on the tracer thread that seized the target.
     _thread_pin: PhantomData<Rc<()>>,
 }
@@ -37,6 +39,8 @@ impl Tracee {
         Ok(Self {
             tid,
             attached: true,
+            #[cfg(feature = "ipc")]
+            ipc_session: Rc::new(()),
             _thread_pin: PhantomData,
         })
     }

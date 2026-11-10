@@ -129,10 +129,8 @@ impl Tracee {
         }
 
         let orig = self.read_regs()?;
-        let sp = orig.sp();
-        let buffer_address = (sp & !0xf).checked_sub(STACK_BUFFER_SIZE).ok_or_else(|| {
-            Error::IllegalState(format!("cannot reserve JNI string buffer below SP {sp:#x}"))
-        })?;
+        let buffer_address =
+            remote::reserve_stack(orig.sp(), STACK_BUFFER_SIZE, align_of::<u16>())?;
         let mut buffer = vec![0; length * size_of::<u16>()];
 
         for (index, chunk) in buffer.chunks_mut(STACK_BUFFER_SIZE).enumerate() {

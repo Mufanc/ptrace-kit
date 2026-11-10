@@ -11,6 +11,12 @@ use ptrace_kit::maps::{MapPath, MapPermissions, Maps};
 use ptrace_kit::maps::{Query, ResolveSymbols, SymbolResolver};
 use ptrace_kit::{Error, Pid, RemoteAddress, Signal, Tracee, WaitStatus};
 use std::error::Error as StdError;
+#[cfg(feature = "ipc")]
+use std::fs::File;
+#[cfg(feature = "ipc")]
+use std::io::Read;
+#[cfg(feature = "ipc")]
+use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
 struct Child(Pid);
@@ -66,6 +72,9 @@ fn controls_child_and_accesses_its_state() {
         raw.cast::<u8>().write_bytes(0x11, 16);
     }
 
+    #[cfg(feature = "ipc")]
+    let inherited_file = File::open("/dev/zero").unwrap();
+
     // After fork, the child only issues async-signal-safe syscalls; it never returns to Rust.
     let pid = unsafe { libc::fork() };
     if pid == 0 {
@@ -77,6 +86,12 @@ fn controls_child_and_accesses_its_state() {
     }
     assert!(pid > 0);
     let child = Child(Pid::from_raw(pid));
+    #[cfg(feature = "ipc")]
+    let remote_fd = {
+        let fd = inherited_file.as_raw_fd();
+        drop(inherited_file);
+        fd
+    };
     #[cfg(feature = "maps")]
     let maps = Maps::scan(child.0).unwrap();
     #[cfg(feature = "symbols")]
@@ -219,6 +234,27 @@ fn controls_child_and_accesses_its_state() {
         tracee.write_all(boundary, &output),
         Err(Error::Io(_))
     ));
+
+    #[cfg(feature = "ipc")]
+    {
+        for _ in 0..2 {
+            let mut local = File::from(tracee.duplicate_fd(remote_fd).unwrap());
+            let mut bytes = [0xff; 16];
+            local.read_exact(&mut bytes).unwrap();
+            assert_eq!(bytes, [0; 16]);
+        }
+        assert!(matches!(
+            tracee.duplicate_fd(-1),
+            Err(Error::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            tracee.duplicate_fd(i32::MAX),
+            Err(Error::System {
+                source: Errno::EBADF,
+                ..
+            })
+        ));
+    }
 
     tracee.resume(None).unwrap();
     tracee.interrupt().unwrap();

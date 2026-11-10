@@ -6,7 +6,8 @@ description = "A toolkit for interacting with processes through ptrace"
 
 [features]
 default = []
-full = ["jni", "symbols"]
+full = ["ipc", "jni"]
+ipc = ["symbols"]
 jni = ["dep:jni-sys"]
 maps = ["dep:procfs"]
 symbols = ["dep:r3solvr", "dep:rustix", "maps"]

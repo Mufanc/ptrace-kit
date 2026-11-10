@@ -122,6 +122,57 @@ fn assert_restored(tracee: &Tracee, orig: &RegSet, fpr: &FpRegSet) {
     assert_eq!(&tracee.read_fp_regs().unwrap(), fpr);
 }
 
+#[cfg(feature = "ipc")]
+#[test]
+fn channel_belongs_to_the_session_that_created_it() {
+    use ptrace_kit::ipc::IpcError;
+
+    let child = Child::paused();
+    let other_child = Child::paused();
+    let mut tracee = child.stopped().with_timeout(Duration::from_secs(2));
+    let mut other = other_child.stopped();
+    let options = call_options(&tracee.read_regs().unwrap(), Duration::from_secs(2));
+    let fd_count = || {
+        std::fs::read_dir(format!("/proc/{}/fd", child.0))
+            .unwrap()
+            .count()
+    };
+    let before = fd_count();
+    let mut channel = unsafe { tracee.create_channel(options.return_address, None) }.unwrap();
+    assert_eq!(fd_count(), before + 1);
+    assert!(matches!(
+        unsafe { other.close_channel(&mut channel, options, None) },
+        Err(IpcError::Core(Error::InvalidArgument(_)))
+    ));
+
+    let expired = CallOptions {
+        deadline: Instant::now(),
+        ..options
+    };
+    assert!(matches!(
+        unsafe { Tracee::close_channel(&mut tracee, &mut channel, expired, None) },
+        Err(IpcError::Call(RemoteCallError::Call {
+            recovery: Recovery::Unchanged,
+            ..
+        }))
+    ));
+    unsafe { tracee.close_channel(&mut channel, options.return_address, None) }.unwrap();
+    assert_eq!(fd_count(), before);
+    assert!(matches!(
+        unsafe { tracee.close_channel(&mut channel, options.return_address, None) },
+        Err(IpcError::Core(Error::IllegalState(_)))
+    ));
+
+    tracee.detach(None).unwrap();
+    let mut reattached = child.stopped();
+    assert!(matches!(
+        unsafe { reattached.close_channel(&mut channel, options, None) },
+        Err(IpcError::Core(Error::InvalidArgument(_)))
+    ));
+    reattached.detach(None).unwrap();
+    other.detach(None).unwrap();
+}
+
 #[test]
 fn remote_call_returns_and_restores_registers() {
     let child = Child::paused();

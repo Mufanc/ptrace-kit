@@ -5,6 +5,8 @@ use nix::sys::ptrace;
 use std::fmt::{self, Display, Formatter};
 use std::time::Instant;
 
+const STACK_ALIGNMENT: usize = 16;
+
 #[derive(Clone, Copy, Debug)]
 pub struct CallOptions {
     pub return_address: RemoteAddress,
@@ -272,6 +274,28 @@ fn is_stop(status: WaitStatus) -> bool {
     )
 }
 
+#[cfg(any(feature = "ipc", feature = "jni"))]
+/// Computes a call SP with room above it for an aligned buffer below the original SP.
+pub(crate) fn reserve_stack(
+    sp: RemoteAddress,
+    len: usize,
+    align: usize,
+) -> Result<RemoteAddress, Error> {
+    if !align.is_power_of_two() {
+        return Err(Error::InvalidArgument(format!(
+            "stack alignment {align} must be a power of two"
+        )));
+    }
+
+    let align = align.max(STACK_ALIGNMENT);
+
+    sp.checked_sub(len)
+        .map(|address| address & !(align - 1))
+        .ok_or_else(|| {
+            Error::IllegalState(format!("cannot reserve {len} stack bytes below SP {sp:#x}"))
+        })
+}
+
 /// Returns a modified snapshot; the caller controls execution and restores the original.
 /// This prepares general-purpose registers only and does not execute the function.
 pub fn prepare_regs(
@@ -295,7 +319,7 @@ pub fn prepare_regs(
     let mut regs = orig.clone();
 
     regs.set_pc(function);
-    regs.set_sp(orig.sp() & !0xf);
+    regs.set_sp(orig.sp() & !(STACK_ALIGNMENT - 1));
     regs.set_lr(return_address);
 
     for (index, &arg) in args.iter().enumerate() {
@@ -311,6 +335,25 @@ mod tests {
     use crate::{Error, RegSet};
     use nix::errno::Errno;
     use std::error::Error as StdError;
+
+    #[cfg(any(feature = "ipc", feature = "jni"))]
+    #[test]
+    fn reserves_stack_with_buffer_and_call_alignment() {
+        assert_eq!(super::reserve_stack(0x1030, 8, 4).unwrap(), 0x1020);
+        assert_eq!(super::reserve_stack(0x1030, 8, 64).unwrap(), 0x1000);
+        assert!(matches!(
+            super::reserve_stack(0x1030, 8, 3),
+            Err(Error::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            super::reserve_stack(0x1030, 8, 0),
+            Err(Error::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            super::reserve_stack(7, 8, 16),
+            Err(Error::IllegalState(_))
+        ));
+    }
 
     #[test]
     fn recovery_errors_display_each_failed_register_set() {
