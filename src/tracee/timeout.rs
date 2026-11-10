@@ -1,10 +1,12 @@
 #[cfg(feature = "ipc")]
-use crate::ipc::{IpcChannel, IpcError};
+use crate::ipc::{IpcChannel, IpcError, RemoteFd};
 #[cfg(feature = "jni")]
 use crate::jni::JniError;
 use crate::remote::{CallOptions, RemoteCallError, StopAction};
 use crate::{Error, RemoteAddress, Tracee, WaitStatus};
 use std::ops::{Deref, DerefMut};
+#[cfg(feature = "ipc")]
+use std::os::fd::BorrowedFd;
 use std::time::{Duration, Instant};
 
 /// Owns a [`Tracee`] and applies a caller-configured timeout per operation.
@@ -98,6 +100,43 @@ impl TraceeWithTimeout {
         let options = self.call_options(return_address)?;
 
         unsafe { self.tracee.close_channel(channel, options, on_stop) }
+    }
+
+    /// Installs a descriptor using the configured timeout.
+    ///
+    /// # Safety
+    /// The safety conditions of [`Tracee::install_fd`] apply.
+    #[cfg(feature = "ipc")]
+    pub unsafe fn install_fd(
+        &mut self,
+        channel: &mut IpcChannel,
+        fd: BorrowedFd<'_>,
+        return_address: RemoteAddress,
+        on_stop: Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
+    ) -> Result<RemoteFd, IpcError> {
+        let options = self.call_options(return_address)?;
+
+        unsafe { self.tracee.install_fd(channel, fd, options, on_stop) }
+    }
+
+    /// Closes a target descriptor using the configured timeout.
+    /// An error returns the handle only if the remote close did not execute.
+    ///
+    /// # Safety
+    /// The safety conditions of [`Tracee::close_fd`] apply.
+    #[cfg(feature = "ipc")]
+    pub unsafe fn close_fd(
+        &mut self,
+        fd: RemoteFd,
+        return_address: RemoteAddress,
+        on_stop: Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
+    ) -> Result<(), (Option<RemoteFd>, IpcError)> {
+        let options = match self.call_options(return_address) {
+            Ok(options) => options,
+            Err(error) => return Err((Some(fd), error.into())),
+        };
+
+        unsafe { self.tracee.close_fd(fd, options, on_stop) }
     }
 
     /// Executes a remote JNI function using the configured timeout.

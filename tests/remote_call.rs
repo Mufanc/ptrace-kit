@@ -173,6 +173,108 @@ fn channel_belongs_to_the_session_that_created_it() {
     other.detach(None).unwrap();
 }
 
+#[cfg(feature = "ipc")]
+#[test]
+fn installs_descriptors_and_rejects_a_poisoned_channel() {
+    use nix::libc::{F_GETFD, FD_CLOEXEC, RTLD_DEFAULT};
+    use ptrace_kit::ipc::IpcError;
+    use std::fs::File;
+    use std::os::fd::{AsFd, AsRawFd};
+    use std::sync::atomic::AtomicU8;
+
+    static READ_BUFFER: AtomicU8 = AtomicU8::new(0xff);
+
+    let child = Child::paused();
+    let mut tracee = child.stopped().with_timeout(Duration::from_secs(2));
+    let return_address = tracee.read_regs().unwrap().sp();
+    let fd_count = || {
+        std::fs::read_dir(format!("/proc/{}/fd", child.0))
+            .unwrap()
+            .count()
+    };
+    let before = fd_count();
+    let local = File::open("/dev/zero").unwrap();
+    let mut channel = unsafe { tracee.create_channel(return_address, None) }.unwrap();
+
+    // The forked child inherits the same libc mappings.
+    let read = unsafe { libc::dlsym(RTLD_DEFAULT, c"read".as_ptr()) } as RemoteAddress;
+    let fcntl = unsafe { libc::dlsym(RTLD_DEFAULT, c"fcntl".as_ptr()) } as RemoteAddress;
+    let recvmsg = unsafe { libc::dlsym(RTLD_DEFAULT, c"recvmsg".as_ptr()) } as RemoteAddress;
+    let close = unsafe { libc::dlsym(RTLD_DEFAULT, c"close".as_ptr()) } as RemoteAddress;
+    assert!(read != 0 && fcntl != 0 && recvmsg != 0 && close != 0);
+
+    for _ in 0..2 {
+        let remote_fd =
+            unsafe { tracee.install_fd(&mut channel, local.as_fd(), return_address, None) }
+                .unwrap();
+        let number = remote_fd.as_raw_fd() as u64;
+        let address = READ_BUFFER.as_ptr() as RemoteAddress;
+        tracee.write_all(address, &[0xff]).unwrap();
+        let count =
+            unsafe { tracee.call_remote(read, &[number, address as u64, 1], return_address, None) }
+                .unwrap();
+        let mut byte = [0xff];
+        tracee.read_exact(address, &mut byte).unwrap();
+        assert_eq!((count, byte), (1, [0]));
+        let flags =
+            unsafe { tracee.call_remote(fcntl, &[number, F_GETFD as u64], return_address, None) }
+                .unwrap();
+        assert_eq!(flags as i32, FD_CLOEXEC);
+        assert_eq!(fd_count(), before + 2);
+
+        let expired = CallOptions {
+            return_address,
+            deadline: Instant::now(),
+        };
+        let (returned_fd, error) =
+            unsafe { Tracee::close_fd(&mut tracee, remote_fd, expired, None) }.unwrap_err();
+        assert!(matches!(
+            error,
+            IpcError::Call(RemoteCallError::Call {
+                cause: Error::Timeout(_),
+                recovery: Recovery::Unchanged,
+            })
+        ));
+        let remote_fd = returned_fd.unwrap();
+        assert_eq!(remote_fd.as_raw_fd() as u64, number);
+        assert_eq!(fd_count(), before + 2);
+        unsafe { tracee.close_fd(remote_fd, return_address, None) }.unwrap();
+        assert_eq!(fd_count(), before + 1);
+    }
+
+    let remote_fd =
+        unsafe { tracee.install_fd(&mut channel, local.as_fd(), return_address, None) }.unwrap();
+    let number = remote_fd.as_raw_fd() as u64;
+    let original = tracee.read_u64(close).unwrap();
+    // Return -1 from close and keep the descriptor open for test cleanup.
+    tracee.write_u64(close, 0xd65f_03c0_9280_0000).unwrap();
+    let failed = unsafe { tracee.close_fd(remote_fd, return_address, None) };
+    tracee.write_u64(close, original).unwrap();
+    assert!(matches!(
+        failed,
+        Err((None, IpcError::Core(Error::Execution(_))))
+    ));
+    assert_eq!(
+        unsafe { tracee.call_remote(close, &[number], return_address, None) }.unwrap(),
+        0
+    );
+    assert_eq!(fd_count(), before + 1);
+
+    let original = tracee.read_u64(recvmsg).unwrap();
+    // Make recvmsg return -1 without reading the packet in the child.
+    tracee.write_u64(recvmsg, 0xd65f_03c0_9280_0000).unwrap();
+    let failed = unsafe { tracee.install_fd(&mut channel, local.as_fd(), return_address, None) };
+    tracee.write_u64(recvmsg, original).unwrap();
+    assert!(matches!(failed, Err(IpcError::Core(Error::Execution(_)))));
+    assert!(matches!(
+        unsafe { tracee.install_fd(&mut channel, local.as_fd(), return_address, None) },
+        Err(IpcError::Core(Error::IllegalState(_)))
+    ));
+    unsafe { tracee.close_channel(&mut channel, return_address, None) }.unwrap();
+    assert_eq!(fd_count(), before);
+    tracee.detach(None).unwrap();
+}
+
 #[test]
 fn remote_call_returns_and_restores_registers() {
     let child = Child::paused();
