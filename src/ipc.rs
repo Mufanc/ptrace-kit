@@ -331,7 +331,7 @@ impl Tracee {
         result
     }
 
-    fn verify_fd_session(&self, fd: &RemoteFd) -> Result<(), Error> {
+    pub(crate) fn verify_fd_session(&self, fd: &RemoteFd) -> Result<(), Error> {
         if !Rc::ptr_eq(&self.ipc_session, &fd.session) {
             return Err(Error::InvalidArgument(
                 "remote descriptor belongs to another tracee session".into(),

@@ -275,6 +275,81 @@ fn installs_descriptors_and_rejects_a_poisoned_channel() {
     tracee.detach(None).unwrap();
 }
 
+#[cfg(feature = "dlfcn")]
+#[test]
+fn reloads_a_shared_object_from_a_descriptor() {
+    use ptrace_kit::dlfcn::DlfcnError;
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+    use std::os::fd::AsFd;
+    use std::process::{Command, Stdio};
+
+    const FIXTURE_DIR: &str = "/data/local/tmp/ptrace-kit-tests/dlfcn";
+
+    let mut process = Command::new("/system/bin/sh")
+        .args(["-c", "echo ready; read line"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let child = Child(Pid::from_raw(process.id() as i32));
+    let mut ready = String::new();
+    BufReader::new(process.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert_eq!(ready.trim(), "ready");
+
+    let mut tracee = child.stopped().with_timeout(Duration::from_secs(2));
+    let return_address = tracee.read_regs().unwrap().sp();
+    let loader = tracee.dynamic_loader().unwrap();
+    let mut channel = unsafe { tracee.create_channel(return_address, None) }.unwrap();
+
+    for version in [1, 2] {
+        let file = File::open(format!("{FIXTURE_DIR}/v{version}.so"))
+            .expect("build and deploy tests/fixtures/dlfcn first");
+        let fd =
+            unsafe { tracee.install_fd(&mut channel, file.as_fd(), return_address, None) }.unwrap();
+        let handle = unsafe {
+            loader.dlopen_fd(
+                &mut tracee,
+                &fd,
+                "libptrace_kit_reload.so",
+                return_address,
+                None,
+            )
+        }
+        .unwrap();
+        unsafe { tracee.close_fd(fd, return_address, None) }.unwrap();
+        assert!(matches!(
+            unsafe { loader.dlsym(&mut tracee, handle, "missing_symbol", return_address, None) },
+            Err(DlfcnError::Core(Error::Execution(_)))
+        ));
+        assert!(matches!(
+            unsafe {
+                loader.dlsym(
+                    &mut tracee,
+                    handle,
+                    "fixture_version\0ignored",
+                    return_address,
+                    None,
+                )
+            },
+            Err(DlfcnError::Core(Error::InvalidArgument(_)))
+        ));
+        let symbol =
+            unsafe { loader.dlsym(&mut tracee, handle, "fixture_version", return_address, None) }
+                .unwrap();
+        assert_eq!(
+            unsafe { tracee.call_remote(symbol, &[], return_address, None) }.unwrap(),
+            version
+        );
+        unsafe { loader.dlclose(&mut tracee, handle, return_address, None) }.unwrap();
+    }
+
+    unsafe { tracee.close_channel(&mut channel, return_address, None) }.unwrap();
+    tracee.detach(None).unwrap();
+}
+
 #[test]
 fn remote_call_returns_and_restores_registers() {
     let child = Child::paused();

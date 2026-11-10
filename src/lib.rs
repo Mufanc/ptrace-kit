@@ -6,6 +6,8 @@
 
 mod constants;
 
+#[cfg(feature = "dlfcn")]
+pub mod dlfcn;
 pub mod error;
 #[cfg(feature = "ipc")]
 pub mod ipc;

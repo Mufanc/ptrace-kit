@@ -12,6 +12,8 @@ Supports **Android on AArch64**.
 - Translate file offsets to target addresses with `MappedFile::address_at_file_offset` and the optional `maps` feature.
 - Call remote functions with up to eight integer or pointer arguments.
 - Transfer file descriptors in either direction with the optional `ipc` feature.
+- Load shared objects from target file descriptors, look up symbols, and release
+  loader references with the optional `dlfcn` feature.
 - Call JNI functions and read Java strings with the optional `jni` feature.
 
 Tracing requires access to the target under Android's permission and SELinux policies.

@@ -1,3 +1,5 @@
+#[cfg(feature = "dlfcn")]
+use crate::dlfcn::{DlfcnError, DynamicLoader};
 #[cfg(feature = "ipc")]
 use crate::ipc::{IpcChannel, IpcError, RemoteFd};
 #[cfg(feature = "jni")]
@@ -139,6 +141,14 @@ impl TraceeWithTimeout {
         unsafe { self.tracee.close_fd(fd, options, on_stop) }
     }
 
+    /// Resolves the target's libdl entry points for use with the configured timeout.
+    #[cfg(feature = "dlfcn")]
+    pub fn dynamic_loader(&self) -> Result<DynamicLoaderWithTimeout, Error> {
+        Ok(DynamicLoaderWithTimeout {
+            loader: self.tracee.dynamic_loader()?,
+        })
+    }
+
     /// Executes a remote JNI function using the configured timeout.
     ///
     /// # Safety
@@ -189,5 +199,65 @@ impl Deref for TraceeWithTimeout {
 impl DerefMut for TraceeWithTimeout {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.tracee
+    }
+}
+
+#[cfg(feature = "dlfcn")]
+/// Applies the supplied tracee's configured timeout to each loader operation.
+#[derive(Debug)]
+pub struct DynamicLoaderWithTimeout {
+    loader: DynamicLoader,
+}
+
+#[cfg(feature = "dlfcn")]
+impl DynamicLoaderWithTimeout {
+    /// Loads a shared object using the tracee's configured timeout.
+    ///
+    /// # Safety
+    /// The safety conditions of [`DynamicLoader::dlopen_fd`] apply.
+    pub unsafe fn dlopen_fd(
+        &self,
+        tracee: &mut TraceeWithTimeout,
+        fd: &RemoteFd,
+        name: &str,
+        return_address: RemoteAddress,
+        on_stop: Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
+    ) -> Result<RemoteAddress, DlfcnError> {
+        let options = tracee.call_options(return_address)?;
+
+        unsafe { self.loader.dlopen_fd(tracee, fd, name, options, on_stop) }
+    }
+
+    /// Looks up a library symbol using the tracee's configured timeout.
+    ///
+    /// # Safety
+    /// The safety conditions of [`DynamicLoader::dlsym`] apply.
+    pub unsafe fn dlsym(
+        &self,
+        tracee: &mut TraceeWithTimeout,
+        handle: RemoteAddress,
+        name: &str,
+        return_address: RemoteAddress,
+        on_stop: Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
+    ) -> Result<RemoteAddress, DlfcnError> {
+        let options = tracee.call_options(return_address)?;
+
+        unsafe { self.loader.dlsym(tracee, handle, name, options, on_stop) }
+    }
+
+    /// Releases a loader reference using the tracee's configured timeout.
+    ///
+    /// # Safety
+    /// The safety conditions of [`DynamicLoader::dlclose`] apply.
+    pub unsafe fn dlclose(
+        &self,
+        tracee: &mut TraceeWithTimeout,
+        handle: RemoteAddress,
+        return_address: RemoteAddress,
+        on_stop: Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
+    ) -> Result<(), DlfcnError> {
+        let options = tracee.call_options(return_address)?;
+
+        unsafe { self.loader.dlclose(tracee, handle, options, on_stop) }
     }
 }
