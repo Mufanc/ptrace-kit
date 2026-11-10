@@ -6,12 +6,15 @@ description = "A toolkit for interacting with processes through ptrace"
 
 [features]
 default = []
-full = ["jni", "maps"]
+full = ["jni", "symbols"]
 jni = ["dep:jni-sys"]
 maps = ["dep:procfs"]
+symbols = ["dep:r3solvr", "dep:rustix", "maps"]
 
 [dependencies]
 jni-sys = { version = "0.4", optional = true }
 nix = { version = "0.31", features = ["ptrace", "signal", "uio"] }
 procfs = { version = "0.18", default-features = false, optional = true }
+r3solvr = { git = "https://github.com/Mufanc/r3solvr", tag = "v1.0.0", optional = true }
+rustix = { version = "1", features = ["fs"], optional = true }
 thiserror = "2"

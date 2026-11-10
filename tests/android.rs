@@ -7,6 +7,8 @@ use nix::sys::signal;
 use nix::sys::wait;
 #[cfg(feature = "maps")]
 use ptrace_kit::maps::{MapPath, MapPermissions, Maps};
+#[cfg(feature = "symbols")]
+use ptrace_kit::maps::{Query, ResolveSymbols, SymbolResolver};
 use ptrace_kit::{Error, Pid, RemoteAddress, Signal, Tracee, WaitStatus};
 use std::error::Error as StdError;
 use std::time::{Duration, Instant};
@@ -76,8 +78,11 @@ fn controls_child_and_accesses_its_state() {
     assert!(pid > 0);
     let child = Child(Pid::from_raw(pid));
     #[cfg(feature = "maps")]
+    let maps = Maps::scan(child.0).unwrap();
+    #[cfg(feature = "symbols")]
+    let mut file = maps.mapped_file("libc.so").unwrap();
+    #[cfg(feature = "maps")]
     {
-        let maps = Maps::scan(child.0).unwrap();
         let executable = std::env::current_exe().unwrap();
         assert!(maps.file_entries().any(|(path, entry)| {
             path == executable && entry.perms.contains(MapPermissions::EXECUTE)
@@ -97,6 +102,54 @@ fn controls_child_and_accesses_its_state() {
                 .iter()
                 .any(|entry| entry.pathname == MapPath::Stack)
         );
+        assert!(matches!(
+            maps.mapped_file("lib/libc.so"),
+            Err(Error::InvalidArgument(_))
+        ));
+
+        #[cfg(feature = "symbols")]
+        {
+            // The forked child inherits the libc mappings used by dlsym here.
+            for symbol in [c"socketpair", c"close", c"socketpair"] {
+                let expected = unsafe { libc::dlsym(libc::RTLD_DEFAULT, symbol.as_ptr()) };
+                assert!(!expected.is_null());
+                let expected = expected as RemoteAddress;
+                let name = symbol.to_str().unwrap();
+                let resolver = file.resolver().unwrap();
+                let symbol = resolver.lookup_symbol(Query::new(name)).unwrap();
+                let section = resolver.lookup_section(symbol.section_index).unwrap();
+                let (start, end) = section.file_range.unwrap();
+                let offset = start + (symbol.addr - section.addr);
+                assert!(offset < end);
+                let mapping = maps.find(expected).unwrap();
+                let MapPath::Path(path) = &mapping.pathname else {
+                    panic!("libc symbol is not file-backed");
+                };
+                assert_ne!(mapping.offset, 0);
+                assert!(mapping.perms.contains(MapPermissions::EXECUTE));
+                assert_eq!(
+                    file.address_at_file_offset(offset as u64, MapPermissions::EXECUTE)
+                        .unwrap(),
+                    expected
+                );
+                assert_eq!(
+                    maps.mapped_file(path)
+                        .unwrap()
+                        .address_at_file_offset(offset as u64, MapPermissions::EXECUTE)
+                        .unwrap(),
+                    expected
+                );
+                assert_eq!(file.resolve_symbol(name).unwrap(), expected);
+            }
+            assert!(matches!(
+                file.resolve_symbol("ptrace_kit_missing_symbol"),
+                Err(Error::IllegalState(_))
+            ));
+            assert!(matches!(
+                file.address_at_file_offset(u64::MAX, MapPermissions::empty()),
+                Err(Error::IllegalState(_))
+            ));
+        }
     }
     assert!(matches!(
         Tracee::seize(Pid::from_raw(0)),
@@ -174,5 +227,19 @@ fn controls_child_and_accesses_its_state() {
     assert!(matches!(tracee.interrupt(), Err(Error::IllegalState(_))));
     let detached = tracee.read_exact(address, &mut output).unwrap_err();
     assert!(matches!(detached, Error::IllegalState(_)));
+
+    #[cfg(feature = "symbols")]
+    let close = file.resolve_symbol("close").unwrap();
+    #[cfg(feature = "symbols")]
+    let mut unloaded = maps.mapped_file("libc.so").unwrap();
     drop((child, mapping));
+
+    #[cfg(feature = "symbols")]
+    {
+        assert!(matches!(unloaded.resolver(), Err(Error::Io(_))));
+        assert_eq!(file.resolve_symbol("close").unwrap(), close);
+        let resolver: SymbolResolver = file.into_resolver().unwrap();
+        drop(maps);
+        assert_eq!(&*resolver.lookup_symbol("close").unwrap().name, "close");
+    }
 }

@@ -8,6 +8,8 @@ Supports **Android on AArch64**.
 - Read and write general-purpose and floating-point/SIMD registers.
 - Read and write remote memory as `u64` values or byte buffers.
 - Read process memory maps and look up mappings by address with the optional `maps` feature.
+- Resolve symbols in a mapped ELF with `MappedFile::resolve_symbol` and the optional `symbols` feature.
+- Translate file offsets to target addresses with `MappedFile::address_at_file_offset` and the optional `maps` feature.
 - Call remote functions with up to eight integer or pointer arguments.
 - Call JNI functions and read Java strings with the optional `jni` feature.
 
