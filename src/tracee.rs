@@ -67,10 +67,24 @@ impl Tracee {
 
     /// A timeout leaves the target in its current state; it does not cancel execution.
     pub fn wait(&mut self, deadline: Instant) -> Result<WaitStatus, Error> {
+        self.do_wait(Some(deadline))
+    }
+
+    /// Waits for a target event without a timeout or periodic polling.
+    pub fn wait_blocking(&mut self) -> Result<WaitStatus, Error> {
+        self.do_wait(None)
+    }
+
+    fn do_wait(&mut self, deadline: Option<Instant>) -> Result<WaitStatus, Error> {
         let tid = self.active_target()?;
+        let flags = if deadline.is_some() {
+            WaitPidFlag::__WALL | WaitPidFlag::WNOHANG
+        } else {
+            WaitPidFlag::__WALL
+        };
 
         loop {
-            match wait::waitpid(tid, Some(WaitPidFlag::__WALL | WaitPidFlag::WNOHANG)) {
+            match wait::waitpid(tid, Some(flags)) {
                 Ok(WaitStatus::StillAlive) | Err(Errno::EINTR) => {}
                 Ok(status) => {
                     if matches!(status, WaitStatus::Exited(..) | WaitStatus::Signaled(..)) {
@@ -84,6 +98,9 @@ impl Tracee {
                 }
             }
 
+            let Some(deadline) = deadline else {
+                continue;
+            };
             let remaining = deadline.saturating_duration_since(Instant::now());
 
             if remaining.is_zero() {

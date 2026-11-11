@@ -323,3 +323,44 @@ fn controls_child_and_accesses_its_state() {
         assert_eq!(&*resolver.lookup_symbol("close").unwrap().name, "close");
     }
 }
+
+#[test]
+fn blocking_wait_receives_stop_and_exit_events() {
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        loop {
+            unsafe { libc::pause() };
+        }
+    }
+    assert!(pid > 0);
+    let child = Child(Pid::from_raw(pid));
+    let mut tracee = Tracee::seize(child.0)
+        .unwrap()
+        .with_timeout(Duration::from_millis(1));
+    let tid = child.0;
+    let started = Instant::now();
+    let sender = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(40));
+        signal::kill(tid, Signal::SIGUSR1).unwrap();
+    });
+
+    // Blocking waits also work through the timeout wrapper and ignore its timeout.
+    let status = tracee.wait_blocking().unwrap();
+    sender.join().unwrap();
+    assert!(matches!(status, WaitStatus::Stopped(id, Signal::SIGUSR1) if id == tid));
+    assert!(started.elapsed() >= Duration::from_millis(40));
+    tracee.read_regs().unwrap();
+
+    signal::kill(tid, Signal::SIGKILL).unwrap();
+    assert!(matches!(
+        tracee.wait_blocking().unwrap(),
+        WaitStatus::Signaled(id, Signal::SIGKILL, _) if id == tid
+    ));
+    // The exit event reaped the child; its guard must not signal a reused PID.
+    std::mem::forget(child);
+    assert!(matches!(
+        tracee.wait_blocking(),
+        Err(Error::IllegalState(_))
+    ));
+    assert!(matches!(tracee.read_regs(), Err(Error::IllegalState(_))));
+}
