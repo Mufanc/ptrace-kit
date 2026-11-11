@@ -1,7 +1,7 @@
 use nix::errno::Errno;
 use nix::libc::{
-    self, _SC_PAGESIZE, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_NONE, PROT_READ, PROT_WRITE,
-    PTRACE_EVENT_STOP, c_void,
+    self, _SC_PAGESIZE, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_EXEC, PROT_NONE, PROT_READ,
+    PROT_WRITE, PTRACE_EVENT_STOP, c_void,
 };
 use nix::sys::signal;
 use nix::sys::wait;
@@ -9,6 +9,7 @@ use nix::sys::wait;
 use ptrace_kit::maps::{MapPath, MapPermissions, Maps};
 #[cfg(feature = "symbols")]
 use ptrace_kit::maps::{Query, ResolveSymbols, SymbolResolver};
+use ptrace_kit::memory;
 use ptrace_kit::{Error, Pid, RemoteAddress, Signal, Tracee, WaitStatus};
 use std::error::Error as StdError;
 #[cfg(feature = "ipc")]
@@ -44,12 +45,12 @@ impl Drop for Mapping {
 
 #[test]
 fn controls_child_and_accesses_its_state() {
-    // Allocate two pages and deny access to the second, producing a real partial transfer.
+    // Writable, inaccessible, and executable pages exercise both write paths.
     let page_size = unsafe { libc::sysconf(_SC_PAGESIZE) } as usize;
     let raw = unsafe {
         libc::mmap(
             std::ptr::null_mut(),
-            page_size * 2,
+            page_size * 3,
             PROT_READ | PROT_WRITE,
             MAP_PRIVATE | MAP_ANONYMOUS,
             -1,
@@ -59,10 +60,14 @@ fn controls_child_and_accesses_its_state() {
     assert_ne!(raw, MAP_FAILED);
     let mapping = Mapping {
         address: raw,
-        len: page_size * 2,
+        len: page_size * 3,
     };
     assert_eq!(
         unsafe { libc::mprotect(raw.add(page_size), page_size, PROT_NONE) },
+        0
+    );
+    assert_eq!(
+        unsafe { libc::mprotect(raw.add(page_size * 2), page_size, PROT_READ | PROT_EXEC) },
         0
     );
 
@@ -170,6 +175,43 @@ fn controls_child_and_accesses_its_state() {
         Tracee::seize(Pid::from_raw(0)),
         Err(Error::InvalidArgument(_))
     ));
+    assert!(matches!(
+        memory::process_mem_write_all(Pid::from_raw(0), address, &[0]),
+        Err(Error::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        memory::process_mem_write_all(child.0, RemoteAddress::MAX, &[0]),
+        Err(Error::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        memory::process_mem_write_all(child.0, 0, &[0]),
+        Err(Error::Io(_))
+    ));
+    let mut before_attach = [0; 16];
+    assert!(matches!(
+        memory::process_mem_read_exact(Pid::from_raw(0), address, &mut before_attach),
+        Err(Error::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        memory::process_mem_read_exact(child.0, RemoteAddress::MAX, &mut before_attach),
+        Err(Error::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        memory::process_mem_read_exact(child.0, 0, &mut before_attach),
+        Err(Error::Io(_))
+    ));
+    memory::process_mem_read_exact(child.0, address, &mut []).unwrap();
+    memory::process_mem_read_exact(child.0, address, &mut before_attach).unwrap();
+    assert_eq!(before_attach, [0x11; 16]);
+    memory::process_mem_write_all(child.0, address, &[]).unwrap();
+    memory::process_mem_write_all(child.0, address, &[0x22; 16]).unwrap();
+    memory::process_mem_read_exact(child.0, address, &mut before_attach).unwrap();
+    assert_eq!(before_attach, [0x22; 16]);
+    let code_address = address + page_size * 2;
+    let breakpoint = [0x00, 0x00, 0x20, 0xd4];
+    memory::process_mem_write_all(child.0, code_address, &breakpoint).unwrap();
+    memory::process_mem_read_exact(child.0, code_address, &mut before_attach[..4]).unwrap();
+    assert_eq!(before_attach[..4], breakpoint);
     let mut tracee = Tracee::seize(child.0)
         .unwrap()
         .with_timeout(Duration::from_millis(20));
@@ -205,8 +247,10 @@ fn controls_child_and_accesses_its_state() {
     );
 
     let mut output = [0; 16];
+    tracee.read_exact(code_address, &mut output[..4]).unwrap();
+    assert_eq!(output[..4], breakpoint);
     tracee.read_exact(address, &mut output).unwrap();
-    assert_eq!(output, [0x11; 16]);
+    assert_eq!(output, [0x22; 16]);
     tracee.write_all(address, &[0x33; 16]).unwrap();
     tracee.read_exact(address, &mut output).unwrap();
     assert_eq!(output, [0x33; 16]);

@@ -1,9 +1,10 @@
 //! Remote memory access with complete-transfer semantics.
 
-use crate::{Error, RemoteAddress, Tracee};
+use crate::{Error, Pid, RemoteAddress, Tracee};
 use nix::errno::Errno;
 use nix::sys::ptrace;
 use nix::sys::uio::{self, RemoteIoVec};
+use std::fs::OpenOptions;
 use std::io::{IoSlice, IoSliceMut};
 
 fn transfer_exact(
@@ -122,6 +123,70 @@ impl Tracee {
             )
         })
     }
+}
+
+/// Reads the entire buffer through `/proc/<tid>/mem`, including before attaching.
+/// Kernel permission checks apply.
+pub fn process_mem_read_exact(
+    tid: Pid,
+    address: RemoteAddress,
+    output: &mut [u8],
+) -> Result<(), Error> {
+    if tid.as_raw() <= 0 {
+        return Err(Error::InvalidArgument(format!(
+            "TID {tid} must be positive"
+        )));
+    }
+
+    checked_range(address, output.len())?;
+
+    let path = format!("/proc/{tid}/mem");
+    let file = OpenOptions::new()
+        .read(true)
+        .open(&path)
+        .map_err(|source| Error::Io(format!("open {path}: {source}")))?;
+
+    transfer_exact(output.len(), |offset| {
+        let len = output.len() - offset;
+
+        uio::pread(&file, &mut output[offset..], (address + offset) as _).map_err(|source| {
+            Error::system(
+                format!("pread {path}, address={:#x}, len={len}", address + offset),
+                source,
+            )
+        })
+    })
+}
+
+/// Writes the entire buffer through `/proc/<tid>/mem`, including before attaching.
+/// Kernel permission checks apply. Partial writes are not rolled back.
+pub fn process_mem_write_all(tid: Pid, address: RemoteAddress, input: &[u8]) -> Result<(), Error> {
+    if tid.as_raw() <= 0 {
+        return Err(Error::InvalidArgument(format!(
+            "TID {tid} must be positive"
+        )));
+    }
+
+    checked_range(address, input.len())?;
+
+    let path = format!("/proc/{tid}/mem");
+    let file = OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .map_err(|source| Error::Io(format!("open {path}: {source}")))?;
+
+    transfer_exact(input.len(), |offset| {
+        uio::pwrite(&file, &input[offset..], (address + offset) as _).map_err(|source| {
+            Error::system(
+                format!(
+                    "pwrite {path}, address={:#x}, len={}",
+                    address + offset,
+                    input.len() - offset
+                ),
+                source,
+            )
+        })
+    })
 }
 
 #[cfg(test)]
