@@ -351,24 +351,42 @@ fn reloads_a_shared_object_from_a_descriptor() {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
     use std::os::fd::AsFd;
-    use std::process::{Command, Stdio};
+    use std::process::{self, Command, Stdio};
 
     const FIXTURE_DIR: &str = "/data/local/tmp/ptrace-kit-tests/dlfcn";
 
-    let mut process = Command::new("/system/bin/sh")
-        .args(["-c", "echo ready; read line"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let child = Child(Pid::from_raw(process.id() as i32));
+    struct Fixture(process::Child);
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let mut fixture = Fixture(
+        Command::new("/system/bin/sh")
+            .args(["-c", "echo ready; read line"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     let mut ready = String::new();
-    BufReader::new(process.stdout.take().unwrap())
+    BufReader::new(fixture.0.stdout.take().unwrap())
         .read_line(&mut ready)
         .unwrap();
     assert_eq!(ready.trim(), "ready");
 
-    let mut tracee = child.stopped().with_timeout(Duration::from_secs(2));
+    let mut tracee = Tracee::seize(Pid::from_raw(fixture.0.id() as i32)).unwrap();
+    tracee.interrupt().unwrap();
+    assert!(matches!(
+        tracee
+            .wait(Instant::now() + Duration::from_secs(2))
+            .unwrap(),
+        WaitStatus::PtraceEvent(_, Signal::SIGTRAP, PTRACE_EVENT_STOP)
+    ));
+    let mut tracee = tracee.with_timeout(Duration::from_secs(2));
     let return_address = tracee.read_regs().unwrap().sp();
     let loader = tracee.dynamic_loader().unwrap();
     let mut channel = unsafe { tracee.create_channel(return_address, None) }.unwrap();
