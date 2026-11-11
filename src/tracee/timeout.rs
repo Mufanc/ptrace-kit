@@ -89,17 +89,21 @@ impl TraceeWithTimeout {
     }
 
     /// Closes an IPC channel using the configured timeout.
+    /// An error returns the channel only if the remote close did not execute.
     ///
     /// # Safety
     /// The safety conditions of [`Tracee::close_channel`] apply.
     #[cfg(feature = "ipc")]
     pub unsafe fn close_channel(
         &mut self,
-        channel: &mut IpcChannel,
+        channel: IpcChannel,
         return_address: RemoteAddress,
         on_stop: Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
-    ) -> Result<(), IpcError> {
-        let options = self.call_options(return_address)?;
+    ) -> Result<(), (Option<IpcChannel>, IpcError)> {
+        let options = match self.call_options(return_address) {
+            Ok(options) => options,
+            Err(error) => return Err((Some(channel), error.into())),
+        };
 
         unsafe { self.tracee.close_channel(channel, options, on_stop) }
     }

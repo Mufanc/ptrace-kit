@@ -126,6 +126,7 @@ fn assert_restored(tracee: &Tracee, orig: &RegSet, fpr: &FpRegSet) {
 #[test]
 fn channel_belongs_to_the_session_that_created_it() {
     use ptrace_kit::ipc::IpcError;
+    use std::os::fd::IntoRawFd;
 
     let child = Child::paused();
     let other_child = Child::paused();
@@ -138,39 +139,88 @@ fn channel_belongs_to_the_session_that_created_it() {
             .count()
     };
     let before = fd_count();
-    let mut channel = unsafe { tracee.create_channel(options.return_address, None) }.unwrap();
+    let channel = unsafe { tracee.create_channel(options.return_address, None) }.unwrap();
     assert_eq!(fd_count(), before + 1);
-    assert!(matches!(
-        unsafe { other.close_channel(&mut channel, options, None) },
-        Err(IpcError::Core(Error::InvalidArgument(_)))
-    ));
+    let (channel, error) = unsafe { other.close_channel(channel, options, None) }.unwrap_err();
+    assert!(matches!(error, IpcError::Core(Error::InvalidArgument(_))));
+    let channel = channel.unwrap();
+    assert_eq!(fd_count(), before + 1);
 
     let expired = CallOptions {
         deadline: Instant::now(),
         ..options
     };
+    let (channel, error) =
+        unsafe { Tracee::close_channel(&mut tracee, channel, expired, None) }.unwrap_err();
     assert!(matches!(
-        unsafe { Tracee::close_channel(&mut tracee, &mut channel, expired, None) },
-        Err(IpcError::Call(RemoteCallError::Call {
+        error,
+        IpcError::Call(RemoteCallError::Call {
             recovery: Recovery::Unchanged,
             ..
-        }))
+        })
     ));
-    unsafe { tracee.close_channel(&mut channel, options.return_address, None) }.unwrap();
+    let channel = channel.unwrap();
+    assert_eq!(fd_count(), before + 1);
+    unsafe { tracee.close_channel(channel, options.return_address, None) }.unwrap();
     assert_eq!(fd_count(), before);
-    assert!(matches!(
-        unsafe { tracee.close_channel(&mut channel, options.return_address, None) },
-        Err(IpcError::Core(Error::IllegalState(_)))
-    ));
 
+    let channel = unsafe { tracee.create_channel(options.return_address, None) }.unwrap();
     tracee.detach(None).unwrap();
     let mut reattached = child.stopped();
-    assert!(matches!(
-        unsafe { reattached.close_channel(&mut channel, options, None) },
-        Err(IpcError::Core(Error::InvalidArgument(_)))
-    ));
+    let (channel, error) = unsafe { reattached.close_channel(channel, options, None) }.unwrap_err();
+    assert!(matches!(error, IpcError::Core(Error::InvalidArgument(_))));
+    let (local, remote) = channel.unwrap().into_parts().unwrap();
+    // Ownership was handed off from the original session for manual cleanup.
+    assert_eq!(
+        unsafe {
+            reattached.call_remote(
+                libc::close as *const () as RemoteAddress,
+                &[remote.into_raw_fd() as u64],
+                options,
+                None,
+            )
+        }
+        .unwrap(),
+        0
+    );
+    drop(local);
+    assert_eq!(fd_count(), before);
     reattached.detach(None).unwrap();
     other.detach(None).unwrap();
+}
+
+#[cfg(feature = "ipc")]
+#[test]
+fn hands_off_channel_endpoints() {
+    use nix::sys::socket::{self, MsgFlags};
+    use std::os::fd::{AsRawFd, IntoRawFd};
+
+    let child = Child::paused();
+    let mut tracee = child.stopped().with_timeout(Duration::from_secs(2));
+    let return_address = tracee.read_regs().unwrap().sp();
+    let channel = unsafe { tracee.create_channel(return_address, None) }.unwrap();
+    let (local, remote) = channel.into_parts().unwrap();
+    let receiver = tracee.duplicate_fd(remote.as_raw_fd()).unwrap();
+
+    // The test owns the child, whose exit releases the handed-off remote endpoint.
+    let remote_number = remote.into_raw_fd();
+    assert!(remote_number >= 0);
+    tracee.detach(None).unwrap();
+    assert_eq!(
+        socket::send(
+            local.as_raw_fd(),
+            b"payload",
+            MsgFlags::MSG_DONTWAIT | MsgFlags::MSG_NOSIGNAL
+        )
+        .unwrap(),
+        7
+    );
+    let mut payload = [0; 7];
+    assert_eq!(
+        socket::recv(receiver.as_raw_fd(), &mut payload, MsgFlags::MSG_DONTWAIT).unwrap(),
+        payload.len()
+    );
+    assert_eq!(&payload, b"payload");
 }
 
 #[cfg(feature = "ipc")]
@@ -270,7 +320,9 @@ fn installs_descriptors_and_rejects_a_poisoned_channel() {
         unsafe { tracee.install_fd(&mut channel, local.as_fd(), return_address, None) },
         Err(IpcError::Core(Error::IllegalState(_)))
     ));
-    unsafe { tracee.close_channel(&mut channel, return_address, None) }.unwrap();
+    let (channel, error) = channel.into_parts().unwrap_err();
+    assert!(matches!(error, Error::IllegalState(_)));
+    unsafe { tracee.close_channel(channel, return_address, None) }.unwrap();
     assert_eq!(fd_count(), before);
     tracee.detach(None).unwrap();
 }
@@ -346,7 +398,7 @@ fn reloads_a_shared_object_from_a_descriptor() {
         unsafe { loader.dlclose(&mut tracee, handle, return_address, None) }.unwrap();
     }
 
-    unsafe { tracee.close_channel(&mut channel, return_address, None) }.unwrap();
+    unsafe { tracee.close_channel(channel, return_address, None) }.unwrap();
     tracee.detach(None).unwrap();
 }
 

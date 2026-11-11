@@ -16,20 +16,24 @@ use std::rc::Rc;
 use std::time::Instant;
 
 /// An IPC channel bound to the tracee session that created it.
-/// Use [`Tracee::close_channel`] before detaching to release the target endpoint.
+/// Close it with [`Tracee::close_channel`] or transfer its endpoints with [`Self::into_parts`].
+#[derive(Debug)]
 pub struct IpcChannel {
     recvmsg: RemoteAddress,
     poisoned: bool,
-    local: Option<OwnedFd>,
+    local: OwnedFd,
     remote: RemoteFd,
 }
 
 impl IpcChannel {
-    fn local_fd(&self) -> Result<BorrowedFd<'_>, Error> {
-        self.local
-            .as_ref()
-            .map(AsFd::as_fd)
-            .ok_or_else(|| Error::IllegalState("IPC channel is closed".into()))
+    /// Transfers ownership of the local and target endpoints to the caller.
+    /// Poisoned channels are returned with the error for cleanup.
+    pub fn into_parts(self) -> Result<(OwnedFd, RemoteFd), (Self, Error)> {
+        if self.poisoned {
+            return Err((self, Error::IllegalState("IPC channel is poisoned".into())));
+        }
+
+        Ok((self.local, self.remote))
     }
 }
 
@@ -79,18 +83,6 @@ pub enum IpcError {
         cause: Box<IpcError>,
         cleanup: Box<IpcError>,
     },
-}
-
-impl IpcError {
-    fn can_retry_close(&self) -> bool {
-        matches!(
-            self,
-            Self::Call(RemoteCallError::Call {
-                recovery: Recovery::Unchanged,
-                ..
-            })
-        )
-    }
 }
 
 impl Tracee {
@@ -210,7 +202,7 @@ impl Tracee {
         Ok(IpcChannel {
             recvmsg: recvmsg_fn,
             poisoned: false,
-            local: Some(local),
+            local,
             remote: RemoteFd::new(&self.ipc_session, remote, close_fn),
         })
     }
@@ -232,7 +224,7 @@ impl Tracee {
     ) -> Result<RemoteFd, IpcError> {
         self.verify_fd_session(&channel.remote)?;
 
-        let local = channel.local_fd()?;
+        let local = channel.local.as_fd();
 
         if channel.poisoned {
             return Err(Error::IllegalState("IPC channel is poisoned".into()).into());
@@ -301,34 +293,50 @@ impl Tracee {
             return Err((Some(fd), error.into()));
         }
 
-        unsafe { self.close_remote_fd(fd.close, fd.as_raw_fd(), options, &mut on_stop) }
-            .map_err(|error| (error.can_retry_close().then_some(fd), error))
+        unsafe { self.close_remote_fd(fd.close, fd.as_raw_fd(), options, &mut on_stop) }.map_err(
+            |error| {
+                let unchanged = matches!(
+                    &error,
+                    IpcError::Call(RemoteCallError::Call {
+                        recovery: Recovery::Unchanged,
+                        ..
+                    })
+                );
+
+                (unchanged.then_some(fd), error)
+            },
+        )
     }
 
     /// Releases a channel using the tracee session that created it.
-    /// The local endpoint is released when the target descriptor is invalidated.
+    /// An error returns the channel only if the remote close did not execute.
     ///
     /// # Safety
     /// The safety conditions of [`Self::call_remote`] apply. The target must still
     /// own the channel endpoint, and its libc must still be mapped at the same address.
     pub unsafe fn close_channel(
         &mut self,
-        channel: &mut IpcChannel,
+        channel: IpcChannel,
         options: CallOptions,
-        mut on_stop: Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
-    ) -> Result<(), IpcError> {
-        self.verify_fd_session(&channel.remote)?;
-        channel.local_fd()?;
+        on_stop: Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
+    ) -> Result<(), (Option<IpcChannel>, IpcError)> {
+        let IpcChannel {
+            recvmsg,
+            poisoned,
+            local,
+            remote,
+        } = channel;
 
-        let number = channel.remote.as_raw_fd();
-        let result =
-            unsafe { self.close_remote_fd(channel.remote.close, number, options, &mut on_stop) };
+        unsafe { self.close_fd(remote, options, on_stop) }.map_err(|(remote, error)| {
+            let channel = remote.map(|remote| IpcChannel {
+                recvmsg,
+                poisoned,
+                local,
+                remote,
+            });
 
-        if !result.as_ref().is_err_and(IpcError::can_retry_close) {
-            drop(channel.local.take());
-        }
-
-        result
+            (channel, error)
+        })
     }
 
     pub(crate) fn verify_fd_session(&self, fd: &RemoteFd) -> Result<(), Error> {
