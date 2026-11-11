@@ -244,14 +244,28 @@ fn installs_descriptors_and_rejects_a_poisoned_channel() {
     };
     let before = fd_count();
     let local = File::open("/dev/zero").unwrap();
-    let mut channel = unsafe { tracee.create_channel(return_address, None) }.unwrap();
 
     // The forked child inherits the same libc mappings.
     let read = unsafe { libc::dlsym(RTLD_DEFAULT, c"read".as_ptr()) } as RemoteAddress;
     let fcntl = unsafe { libc::dlsym(RTLD_DEFAULT, c"fcntl".as_ptr()) } as RemoteAddress;
     let recvmsg = unsafe { libc::dlsym(RTLD_DEFAULT, c"recvmsg".as_ptr()) } as RemoteAddress;
     let close = unsafe { libc::dlsym(RTLD_DEFAULT, c"close".as_ptr()) } as RemoteAddress;
-    assert!(read != 0 && fcntl != 0 && recvmsg != 0 && close != 0);
+    let socketpair = unsafe { libc::dlsym(RTLD_DEFAULT, c"socketpair".as_ptr()) } as RemoteAddress;
+    let syscall = unsafe { libc::dlsym(RTLD_DEFAULT, c"syscall".as_ptr()) } as RemoteAddress;
+    assert!(
+        read != 0 && fcntl != 0 && recvmsg != 0 && close != 0 && syscall != 0 && socketpair != 0
+    );
+
+    let socketpair_orig = tracee.read_u64(socketpair).unwrap();
+    let close_orig = tracee.read_u64(close).unwrap();
+    let recvmsg_orig = tracee.read_u64(recvmsg).unwrap();
+    // The IPC calls must bypass these libc wrappers. BRK would abort the call.
+    tracee.write_u64(socketpair, 0xd420_0000_d420_0000).unwrap();
+    tracee.write_u64(close, 0xd420_0000_d420_0000).unwrap();
+    tracee.write_u64(recvmsg, 0xd420_0000_d420_0000).unwrap();
+
+    let mut channel = unsafe { tracee.create_channel(return_address, None) }.unwrap();
+    tracee.write_u64(socketpair, socketpair_orig).unwrap();
 
     for _ in 0..2 {
         let remote_fd =
@@ -292,14 +306,17 @@ fn installs_descriptors_and_rejects_a_poisoned_channel() {
         assert_eq!(fd_count(), before + 1);
     }
 
+    tracee.write_u64(close, close_orig).unwrap();
+    tracee.write_u64(recvmsg, recvmsg_orig).unwrap();
+
     let remote_fd =
         unsafe { tracee.install_fd(&mut channel, local.as_fd(), return_address, None) }.unwrap();
     let number = remote_fd.as_raw_fd() as u64;
-    let original = tracee.read_u64(close).unwrap();
-    // Return -1 from close and keep the descriptor open for test cleanup.
-    tracee.write_u64(close, 0xd65f_03c0_9280_0000).unwrap();
+    let original = tracee.read_u64(syscall).unwrap();
+    // Return -1 from syscall and keep the descriptor open for test cleanup.
+    tracee.write_u64(syscall, 0xd65f_03c0_9280_0000).unwrap();
     let failed = unsafe { tracee.close_fd(remote_fd, return_address, None) };
-    tracee.write_u64(close, original).unwrap();
+    tracee.write_u64(syscall, original).unwrap();
     assert!(matches!(
         failed,
         Err((None, IpcError::Core(Error::Execution(_))))
@@ -310,11 +327,11 @@ fn installs_descriptors_and_rejects_a_poisoned_channel() {
     );
     assert_eq!(fd_count(), before + 1);
 
-    let original = tracee.read_u64(recvmsg).unwrap();
-    // Make recvmsg return -1 without reading the packet in the child.
-    tracee.write_u64(recvmsg, 0xd65f_03c0_9280_0000).unwrap();
+    let original = tracee.read_u64(syscall).unwrap();
+    // Make syscall return -1 without reading the packet in the child.
+    tracee.write_u64(syscall, 0xd65f_03c0_9280_0000).unwrap();
     let failed = unsafe { tracee.install_fd(&mut channel, local.as_fd(), return_address, None) };
-    tracee.write_u64(recvmsg, original).unwrap();
+    tracee.write_u64(syscall, original).unwrap();
     assert!(matches!(failed, Err(IpcError::Core(Error::Execution(_)))));
     assert!(matches!(
         unsafe { tracee.install_fd(&mut channel, local.as_fd(), return_address, None) },

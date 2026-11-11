@@ -8,8 +8,8 @@ use crate::remote::{self, CallOptions, Recovery, RemoteCallError, StopAction};
 use crate::{Error, RemoteAddress, Tracee, WaitStatus};
 use nix::errno::Errno;
 use nix::libc::{
-    self, AF_UNIX, MSG_CMSG_CLOEXEC, MSG_DONTWAIT, SOCK_CLOEXEC, SOCK_SEQPACKET, SYS_pidfd_getfd,
-    SYS_pidfd_open,
+    self, AF_UNIX, MSG_CMSG_CLOEXEC, MSG_DONTWAIT, SOCK_CLOEXEC, SOCK_SEQPACKET, SYS_close,
+    SYS_pidfd_getfd, SYS_pidfd_open, SYS_recvmsg, SYS_socketpair,
 };
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::rc::Rc;
@@ -19,7 +19,6 @@ use std::time::Instant;
 /// Close it with [`Tracee::close_channel`] or transfer its endpoints with [`Self::into_parts`].
 #[derive(Debug)]
 pub struct IpcChannel {
-    recvmsg: RemoteAddress,
     poisoned: bool,
     local: OwnedFd,
     remote: RemoteFd,
@@ -39,19 +38,20 @@ impl IpcChannel {
 
 /// A descriptor owned by the target process. Close it with [`Tracee::close_fd`].
 /// Dropping the handle leaves the descriptor open in the target.
+/// Descriptors are created and closed through libc `syscall`, bypassing fd tracking.
 #[derive(Debug)]
 pub struct RemoteFd {
     session: Rc<()>,
     fd: RawFd,
-    close: RemoteAddress,
+    syscall_fn: RemoteAddress,
 }
 
 impl RemoteFd {
-    fn new(session: &Rc<()>, fd: RawFd, close: RemoteAddress) -> Self {
+    fn new(session: &Rc<()>, fd: RawFd, syscall_fn: RemoteAddress) -> Self {
         Self {
             session: Rc::clone(session),
             fd,
-            close,
+            syscall_fn,
         }
     }
 }
@@ -128,37 +128,31 @@ impl Tracee {
     ) -> Result<IpcChannel, IpcError> {
         let maps = Maps::scan(self.active_target()?)?;
         let mut libc = maps.mapped_file("libc.so")?;
-        let socketpair_fn = libc.resolve_symbol("socketpair")?;
-        let close_fn = libc.resolve_symbol("close")?;
-        let recvmsg_fn = libc.resolve_symbol("recvmsg")?;
+        let syscall_fn = libc.resolve_symbol("syscall")?;
 
-        for address in [socketpair_fn, close_fn, recvmsg_fn] {
-            if !maps
-                .find(address)
-                .is_some_and(|entry| entry.perms.contains(MapPermissions::EXECUTE))
-            {
-                return Err(Error::IllegalState(format!(
-                    "libc.so address {address:#x} is not executable"
-                ))
-                .into());
-            }
+        if !maps
+            .find(syscall_fn)
+            .is_some_and(|entry| entry.perms.contains(MapPermissions::EXECUTE))
+        {
+            return Err(Error::IllegalState(format!(
+                "libc.so address {syscall_fn:#x} is not executable"
+            ))
+            .into());
         }
 
         let orig = self.read_regs().map_err(RemoteCallError::unchanged)?;
         let buffer =
             remote::reserve_stack(orig.sp(), size_of::<[RawFd; 2]>(), align_of::<[RawFd; 2]>())?;
         let args = [
+            SYS_socketpair as u64,
             AF_UNIX as u64,
             (SOCK_SEQPACKET | SOCK_CLOEXEC) as u64,
             0,
             buffer as u64,
         ];
-        let mut entry = remote::prepare_regs(&orig, socketpair_fn, &args, options.return_address)
+        let mut entry = remote::prepare_regs(&orig, syscall_fn, &args, options.return_address)
             .map_err(RemoteCallError::unchanged)?;
 
-        // Validate the cleanup call before socketpair opens any descriptors.
-        remote::prepare_regs(&orig, close_fn, &[], options.return_address)
-            .map_err(RemoteCallError::unchanged)?;
         entry.set_sp(buffer);
 
         let status =
@@ -183,7 +177,7 @@ impl Tracee {
                     self.cleanup_channel_setup(
                         cause.into(),
                         &[local_fd, remote],
-                        close_fn,
+                        syscall_fn,
                         options,
                         &mut on_stop,
                     )
@@ -192,18 +186,17 @@ impl Tracee {
         };
 
         if let Err(cause) =
-            unsafe { self.close_remote_fd(close_fn, local_fd, options, &mut on_stop) }
+            unsafe { self.close_remote_fd(syscall_fn, local_fd, options, &mut on_stop) }
         {
             return Err(unsafe {
-                self.cleanup_channel_setup(cause, &[remote], close_fn, options, &mut on_stop)
+                self.cleanup_channel_setup(cause, &[remote], syscall_fn, options, &mut on_stop)
             });
         }
 
         Ok(IpcChannel {
-            recvmsg: recvmsg_fn,
             poisoned: false,
             local,
-            remote: RemoteFd::new(&self.ipc_session, remote, close_fn),
+            remote: RemoteFd::new(&self.ipc_session, remote, syscall_fn),
         })
     }
 
@@ -238,9 +231,19 @@ impl Tracee {
         )?;
         let remote = channel.remote.as_raw_fd();
         let flags = MSG_CMSG_CLOEXEC | MSG_DONTWAIT;
-        let args = [remote as u64, buffer as u64, flags as u64];
-        let mut entry = remote::prepare_regs(&orig, channel.recvmsg, &args, options.return_address)
-            .map_err(RemoteCallError::unchanged)?;
+        let args = [
+            SYS_recvmsg as u64,
+            remote as u64,
+            buffer as u64,
+            flags as u64,
+        ];
+        let mut entry = remote::prepare_regs(
+            &orig,
+            channel.remote.syscall_fn,
+            &args,
+            options.return_address,
+        )
+        .map_err(RemoteCallError::unchanged)?;
         let mut message = ReceiveBuffer::encode(buffer);
 
         entry.set_sp(buffer);
@@ -274,7 +277,11 @@ impl Tracee {
 
         channel.poisoned = false;
 
-        Ok(RemoteFd::new(&self.ipc_session, fd, channel.remote.close))
+        Ok(RemoteFd::new(
+            &self.ipc_session,
+            fd,
+            channel.remote.syscall_fn,
+        ))
     }
 
     /// Closes a target descriptor owned by this tracee session.
@@ -293,8 +300,8 @@ impl Tracee {
             return Err((Some(fd), error.into()));
         }
 
-        unsafe { self.close_remote_fd(fd.close, fd.as_raw_fd(), options, &mut on_stop) }.map_err(
-            |error| {
+        unsafe { self.close_remote_fd(fd.syscall_fn, fd.as_raw_fd(), options, &mut on_stop) }
+            .map_err(|error| {
                 let unchanged = matches!(
                     &error,
                     IpcError::Call(RemoteCallError::Call {
@@ -304,8 +311,7 @@ impl Tracee {
                 );
 
                 (unchanged.then_some(fd), error)
-            },
-        )
+            })
     }
 
     /// Releases a channel using the tracee session that created it.
@@ -321,7 +327,6 @@ impl Tracee {
         on_stop: Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
     ) -> Result<(), (Option<IpcChannel>, IpcError)> {
         let IpcChannel {
-            recvmsg,
             poisoned,
             local,
             remote,
@@ -329,7 +334,6 @@ impl Tracee {
 
         unsafe { self.close_fd(remote, options, on_stop) }.map_err(|(remote, error)| {
             let channel = remote.map(|remote| IpcChannel {
-                recvmsg,
                 poisoned,
                 local,
                 remote,
@@ -354,15 +358,15 @@ impl Tracee {
 
     unsafe fn close_remote_fd(
         &mut self,
-        close: RemoteAddress,
+        syscall_fn: RemoteAddress,
         fd: RawFd,
         options: CallOptions,
         on_stop: &mut Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
     ) -> Result<(), IpcError> {
         let status = unsafe {
             self.call_remote(
-                close,
-                &[fd as u64],
+                syscall_fn,
+                &[SYS_close as u64, fd as u64],
                 options,
                 match on_stop.as_mut() {
                     Some(handler) => Some(&mut **handler),
@@ -382,7 +386,7 @@ impl Tracee {
         &mut self,
         cause: IpcError,
         fds: &[RawFd],
-        close: RemoteAddress,
+        syscall_fn: RemoteAddress,
         options: CallOptions,
         on_stop: &mut Option<&mut dyn FnMut(WaitStatus) -> StopAction>,
     ) -> IpcError {
@@ -400,7 +404,8 @@ impl Tracee {
         }
 
         for &fd in fds {
-            if let Err(cleanup) = unsafe { self.close_remote_fd(close, fd, options, on_stop) } {
+            if let Err(cleanup) = unsafe { self.close_remote_fd(syscall_fn, fd, options, on_stop) }
+            {
                 return IpcError::SetupCleanup {
                     cause: Box::new(cause),
                     cleanup: Box::new(cleanup),
