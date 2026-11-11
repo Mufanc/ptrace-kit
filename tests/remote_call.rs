@@ -645,8 +645,8 @@ fn remote_call_reports_unrecoverable_target_exit() {
             error,
             RemoteCallError::Call {
                 cause: Error::Execution(_),
-                recovery: Recovery::Failed(RemoteCallRecoveryError::NotStopped)
-            }
+                recovery: Recovery::Failed(ref cause)
+            } if matches!(cause.as_ref(), RemoteCallRecoveryError::NotStopped)
         ),
         "{error}"
     );
@@ -679,8 +679,8 @@ fn remote_call_leaves_timed_out_target_running() {
                 error,
                 RemoteCallError::Call {
                     cause: Error::Timeout(_),
-                    recovery: Recovery::Failed(RemoteCallRecoveryError::NotStopped)
-                }
+                    recovery: Recovery::Failed(ref cause)
+                } if matches!(cause.as_ref(), RemoteCallRecoveryError::NotStopped)
             ),
             "{error}"
         );

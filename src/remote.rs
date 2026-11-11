@@ -23,7 +23,7 @@ pub enum StopAction {
 pub enum Recovery {
     Unchanged,
     Restored,
-    Failed(RemoteCallRecoveryError),
+    Failed(Box<RemoteCallRecoveryError>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -233,7 +233,7 @@ impl Tracee {
             }),
             (Err(cause), Err(error)) => Err(RemoteCallError::Call {
                 cause,
-                recovery: Recovery::Failed(error),
+                recovery: Recovery::Failed(Box::new(error)),
             }),
             (Ok(_), Err(cause)) => Err(RemoteCallError::Recovery { cause }),
         }
@@ -380,13 +380,13 @@ mod tests {
     fn call_failure_keeps_primary_source_and_recovery_context() {
         let error = RemoteCallError::Call {
             cause: Error::Timeout("remote function".into()),
-            recovery: Recovery::Failed(RemoteCallRecoveryError::Registers {
+            recovery: Recovery::Failed(Box::new(RemoteCallRecoveryError::Registers {
                 gpr: Some(Error::System {
                     reason: "restore GPR".into(),
                     source: Errno::EIO,
                 }),
                 fpr: None,
-            }),
+            })),
         };
         let source = error.source().unwrap().downcast_ref::<Error>().unwrap();
         assert!(matches!(source, Error::Timeout(_)));
